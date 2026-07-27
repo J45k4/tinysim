@@ -12,6 +12,7 @@ from benchmarks.bench_matrix import (
     run_matrix,
     write_report,
 )
+from benchmarks.bench_recording_memory import _run_child
 from tinysim.provenance import source_tree_sha256
 
 
@@ -131,6 +132,21 @@ class TestBenchmarkProtocol(unittest.TestCase):
             loaded = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(loaded["schema_version"], 1)
             self.assertIn("TinySim benchmark report", markdown_path.read_text())
+
+    def test_recording_memory_stream_case_reports_bounded_overhead(self):
+        result = _run_child("stream-101", full=False)
+        self.assertEqual(result["frames"], 101)
+        self.assertGreaterEqual(
+            result["trajectory_bytes"], result["raw_payload_bytes"]
+        )
+        self.assertLess(
+            result["trajectory_bytes"] - result["raw_payload_bytes"],
+            1024,
+        )
+        self.assertEqual(
+            [snapshot["label"] for snapshot in result["snapshots"]],
+            ["imported", "before-write", "after-write"],
+        )
 
 
 if __name__ == "__main__":

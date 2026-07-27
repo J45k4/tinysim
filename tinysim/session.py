@@ -11,10 +11,9 @@ from .render import Camera2D, encode_mp4, render_model, render_model_grid
 from .simulation import Simulator
 from .state import State, validate_state
 from .trajectory import (
-    Trajectory,
-    load_trajectory,
-    playback_indices,
-    save_trajectory,
+    TrajectoryReader,
+    TrajectoryWriter,
+    iter_playback_indices,
 )
 
 
@@ -212,72 +211,71 @@ class Simulation:
                         "recording grid tiles must be at least 16 pixels "
                         "in each dimension"
                     )
-        qpos: list[list[float]] = []
-        qvel: list[list[float]] = []
-        controls: list[list[float]] = []
-
-        def selected(tensor: Tensor) -> list[list[float]]:
-            if tensor.shape[1] == 0:
-                return [[] for _ in recorded_worlds]
-            return Tensor.stack(
-                *(tensor[index] for index in recorded_worlds),
-                dim=0,
-            ).realize().tolist()
-
-        def capture() -> None:
-            for destination, tensor in (
-                (qpos, self.state.qpos),
-                (qvel, self.state.qvel),
-                (controls, self.state.ctrl),
-            ):
-                rows = selected(tensor)
-                destination.append(
-                    [value for row in rows for value in row]
-                )
-
-        if record is not None:
-            capture()
-        for step_index in range(steps):
-            self.state = (
-                self.simulator.inference_step(self.state, control)
-                if inference
-                else self.simulator.step(self.state, control)
-            )
-            if (
-                record is not None
-                and (step_index + 1) % record_every == 0
-            ):
-                capture()
         if record is None:
+            for _ in range(steps):
+                self.state = (
+                    self.simulator.inference_step(self.state, control)
+                    if inference
+                    else self.simulator.step(self.state, control)
+                )
             return self.state
 
         video_path = Path(record)
-        trajectory_path = video_path.with_suffix(".trajectory.json")
-        save_trajectory(
-            Trajectory(
-                scenario=self.simulator.model.name,
-                timestep=self.simulator.model.timestep * record_every,
-                qpos=qpos,
-                qvel=qvel,
-                controls=controls,
-                metadata={
-                    "recorded_world": recorded_worlds[0],
-                    "recorded_worlds": list(recorded_worlds),
-                    "worlds": self.worlds,
-                    "grid_columns": columns,
-                    "record_every": record_every,
-                    "simulation_steps": steps,
-                    "simulation_timestep": self.simulator.model.timestep,
-                },
-            ),
+        trajectory_path = video_path.with_suffix(".trajectory.tstraj")
+        model = self.simulator.model
+        dtype = (
+            "float32"
+            if model.dtype == dtypes.float32
+            else "float64"
+            if model.dtype == dtypes.float64
+            else None
+        )
+        if dtype is None:
+            raise TypeError("recording supports float32 and float64")
+        selected_count = len(recorded_worlds)
+
+        def capture(writer: TrajectoryWriter) -> None:
+            fields = [self.state.qpos, self.state.qvel]
+            if model.nu:
+                fields.append(self.state.ctrl)
+            selected_fields = [
+                Tensor.stack(
+                    *(tensor[index] for index in recorded_worlds),
+                    dim=0,
+                ).flatten()
+                for tensor in fields
+            ]
+            packed = Tensor.cat(*selected_fields).contiguous().realize()
+            writer.append(packed.data())
+
+        with TrajectoryWriter(
             trajectory_path,
-        )
-        trajectory = load_trajectory(trajectory_path)
-        indices = playback_indices(
-            len(trajectory.qpos),
-            timestep=trajectory.timestep,
-            fps=fps,
-        )
+            scenario=model.name,
+            timestep=model.timestep * record_every,
+            qpos_width=selected_count * model.nq,
+            qvel_width=selected_count * model.nv,
+            control_width=selected_count * model.nu,
+            dtype=dtype,
+            metadata={
+                "recorded_world": recorded_worlds[0],
+                "recorded_worlds": list(recorded_worlds),
+                "worlds": self.worlds,
+                "grid_columns": columns,
+                "record_every": record_every,
+                "simulation_steps": steps,
+                "simulation_timestep": model.timestep,
+            },
+        ) as writer:
+            capture(writer)
+            for step_index in range(steps):
+                self.state = (
+                    self.simulator.inference_step(self.state, control)
+                    if inference
+                    else self.simulator.step(self.state, control)
+                )
+                if (step_index + 1) % record_every == 0:
+                    capture(writer)
+
         nq = self.simulator.model.nq
         if len(recorded_worlds) == 1:
             render_frame = renderer or (
@@ -303,13 +301,22 @@ class Simulation:
                     camera=camera,
                 )
             )
-        encode_mp4(
-            (render_frame(trajectory.qpos[index]) for index in indices),
-            video_path,
-            width=width,
-            height=height,
-            fps=fps,
-        )
+        with TrajectoryReader(trajectory_path) as trajectory:
+            indices = iter_playback_indices(
+                trajectory.frame_count,
+                timestep=trajectory.timestep,
+                fps=fps,
+            )
+            encode_mp4(
+                (
+                    render_frame(trajectory.read_qpos(index))
+                    for index in indices
+                ),
+                video_path,
+                width=width,
+                height=height,
+                fps=fps,
+            )
         return self.state
 
     def record(

@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -16,6 +15,7 @@ from tinysim import (
     Simulator,
 )
 from tinysim.render import render_model, render_model_grid
+from tinysim.trajectory import TrajectoryReader
 
 
 def ball_spec() -> ModelSpec:
@@ -95,13 +95,14 @@ class TestSimulationSession(unittest.TestCase):
                     width=64,
                     height=48,
                 )
-            trajectory_path = video.with_suffix(".trajectory.json")
-            payload = json.loads(trajectory_path.read_text())
+            trajectory_path = video.with_suffix(".trajectory.tstraj")
+            with TrajectoryReader(trajectory_path) as trajectory:
+                self.assertEqual(trajectory.frame_count, 11)
+                self.assertEqual(trajectory.qpos_width, 7)
+                self.assertEqual(trajectory.qvel_width, 6)
+                self.assertEqual(trajectory.metadata["recorded_world"], 1)
+                self.assertEqual(trajectory.metadata["worlds"], 2)
             self.assertTrue(video.is_file())
-            self.assertEqual(len(payload["qpos"]), 11)
-            self.assertEqual(len(payload["qvel"]), 11)
-            self.assertEqual(payload["metadata"]["recorded_world"], 1)
-            self.assertEqual(payload["metadata"]["worlds"], 2)
             self.assertEqual(encoded["fps"], 60)
             self.assertEqual(len(encoded["frames"]), 1)
             self.assertEqual(len(encoded["frames"][0]), 64 * 48 * 3)
@@ -139,12 +140,19 @@ class TestSimulationSession(unittest.TestCase):
                     width=128,
                     height=96,
                 )
-            payload = json.loads(
-                video.with_suffix(".trajectory.json").read_text()
-            )
-        self.assertEqual(payload["metadata"]["recorded_worlds"], [0, 2, 3])
-        self.assertEqual(payload["metadata"]["grid_columns"], 2)
-        self.assertEqual(len(payload["qpos"][0]), 3 * 7)
+            with TrajectoryReader(
+                video.with_suffix(".trajectory.tstraj")
+            ) as trajectory:
+                self.assertEqual(
+                    trajectory.metadata["recorded_worlds"], [0, 2, 3]
+                )
+                self.assertEqual(trajectory.metadata["grid_columns"], 2)
+                self.assertEqual(trajectory.qpos_width, 3 * 7)
+                qpos = trajectory.read_qpos(0)
+                self.assertEqual(
+                    [qpos[offset + 2] for offset in (0, 7, 14)],
+                    [0.5, 1.0, 1.25],
+                )
         self.assertEqual(len(encoded["frames"]), 1)
         self.assertEqual(len(encoded["frames"][0]), 128 * 96 * 3)
 
@@ -172,13 +180,78 @@ class TestSimulationSession(unittest.TestCase):
                     width=64,
                     height=48,
                 )
-            payload = json.loads(
-                video.with_suffix(".trajectory.json").read_text()
-            )
-        self.assertEqual(len(payload["qpos"]), 3)
-        self.assertAlmostEqual(payload["timestep"], 0.01, places=8)
-        self.assertEqual(payload["metadata"]["record_every"], 5)
-        self.assertEqual(payload["metadata"]["simulation_steps"], 10)
+            with TrajectoryReader(
+                video.with_suffix(".trajectory.tstraj")
+            ) as trajectory:
+                self.assertEqual(trajectory.frame_count, 3)
+                self.assertAlmostEqual(trajectory.timestep, 0.01, places=8)
+                self.assertEqual(trajectory.metadata["record_every"], 5)
+                self.assertEqual(trajectory.metadata["simulation_steps"], 10)
+
+    def test_recording_does_not_materialize_python_state_lists(self):
+        simulation = Simulation(ball_spec(), worlds=2)
+        simulation.reset(
+            qpos=[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+        )
+        with TemporaryDirectory() as directory:
+            video = Path(directory) / "ball.mp4"
+            with (
+                patch.object(
+                    Tensor,
+                    "tolist",
+                    side_effect=AssertionError("recording read a host list"),
+                ),
+                patch("tinysim.session.encode_mp4"),
+            ):
+                simulation.record(video, steps=2, width=64, height=48)
+
+    def test_recording_performs_one_host_transfer_per_capture(self):
+        simulation = Simulation(ball_spec(), worlds=2)
+        simulation.reset(
+            qpos=[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+        )
+        simulation.run(steps=3)
+        original = Tensor.data
+        transfers = 0
+
+        def counted(tensor):
+            nonlocal transfers
+            transfers += 1
+            return original(tensor)
+
+        with TemporaryDirectory() as directory:
+            video = Path(directory) / "ball.mp4"
+            with (
+                patch.object(Tensor, "data", new=counted),
+                patch("tinysim.session.encode_mp4"),
+            ):
+                simulation.record(
+                    video,
+                    steps=4,
+                    record_every=2,
+                    width=64,
+                    height=48,
+                )
+        self.assertEqual(transfers, 3)
+
+    def test_recording_does_not_change_final_state(self):
+        plain = Simulation(ball_spec(), worlds=2)
+        recorded = Simulation(ball_spec(), worlds=2)
+        qpos = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+        plain.reset(qpos=qpos)
+        recorded.reset(qpos=qpos)
+        expected = plain.run(steps=4)
+        with TemporaryDirectory() as directory:
+            with patch("tinysim.session.encode_mp4"):
+                actual = recorded.record(
+                    Path(directory) / "ball.mp4",
+                    steps=4,
+                    width=64,
+                    height=48,
+                )
+        self.assertEqual(expected.qpos.tolist(), actual.qpos.tolist())
+        self.assertEqual(expected.qvel.tolist(), actual.qvel.tolist())
+        self.assertEqual(expected.time.tolist(), actual.time.tolist())
 
     def test_automatic_model_renderer_is_state_sensitive(self):
         model = Simulator.compile(ball_spec()).model

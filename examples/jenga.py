@@ -274,7 +274,7 @@ def main() -> None:
     if args.record:
         print(
             f"video={args.record}; "
-            f"trajectory={args.record.with_suffix('.trajectory.json')}"
+            f"trajectory={args.record.with_suffix('.trajectory.tstraj')}"
         )
 
 

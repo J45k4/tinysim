@@ -55,8 +55,8 @@ python3 -m tinysim.verify --scenario pendulum --output artifacts/verify/pendulum
 python3 examples/locomotion.py
 ```
 
-The bouncing-ball example can record any selected batched world. It saves a
-trajectory sidecar and renders the MP4 from the reloaded trajectory:
+The bouncing-ball example can record any selected batched world. It streams a
+compact trajectory sidecar and renders the MP4 from that bounded-memory stream:
 
 ```sh
 python3 examples/bouncing_ball.py --worlds 256 --steps 2000 \
@@ -137,12 +137,16 @@ simulation.record(
 )
 ```
 
-Recorded runs save a `.trajectory.json` sidecar, reload it, and render supported
+Recorded runs save a versioned `.trajectory.tstraj` sidecar and render supported
 sphere, capsule, box, and plane geometry through the host-side primitive
-renderer. Grid recordings copy and store only the selected worlds. Initialize
-those worlds with different states or parameters to compare their rollouts.
+renderer. Samples are packed into one compact device-to-host transfer and
+written immediately, so host memory does not grow with trajectory length. Grid
+recordings copy and store only the selected worlds. Initialize those worlds
+with different states or parameters to compare their rollouts.
 `Simulation.from_compiled(...)` is available for advanced checkpoint or
-compilation-reuse workflows.
+compilation-reuse workflows. Use
+`tinysim.trajectory.export_trajectory_json(...)` when a portable JSON copy is
+needed.
 
 The Jenga stress example exercises oriented box-box SAT collision, free-body
 rotation, friction, many fixed collision pairs, TinyJit, and grid recording:

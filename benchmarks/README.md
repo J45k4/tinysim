@@ -54,3 +54,26 @@ python3 -m benchmarks.bench_matrix \
 `python3 -m benchmarks.bench_compile` is a one-world compile/capture shortcut;
 `python3 -m benchmarks.bench_batch_scaling` runs forward scaling without
 backward or subsystem samples. Both accept the matrix runner's CLI options.
+
+The recording-memory benchmark runs every case in a fresh subprocess so
+process high-water RSS remains attributable to one workload:
+
+```bash
+PYTHONPATH=.:tinygrad DEV=CPU \
+  python3 -m benchmarks.bench_recording_memory \
+  --output artifacts/benchmarks/recording-memory-quick.json
+```
+
+The full acceptance run includes the 10-level Jenga workload with 256 simulated
+worlds and a 64-world recording grid:
+
+```bash
+PYTHONPATH=.:tinygrad DEV=CUDA \
+  python3 -m benchmarks.bench_recording_memory --full \
+  --output artifacts/benchmarks/recording-memory-cuda.json
+```
+
+It reports current and peak process RSS, tinygrad allocator-resident bytes,
+trajectory/video sizes, and elapsed time. Synthetic 101-, 1,001-, and
+10,001-frame cases verify that trajectory length changes disk usage without
+causing proportional host-memory growth.

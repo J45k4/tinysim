@@ -5,8 +5,8 @@ Parameters: unit mass, radius=0.25 m, gravity=-9.81 m/s², contact stiffness
 device. Integration is semi-implicit Euler and there is no constraint solver.
 The expected behavior is a bounded rebound followed by settling near z=0.25 m.
 
-Pass ``--record output.mp4`` to save and reload one world's trajectory before
-rendering it with the optional host-side encoder.
+Pass ``--record output.mp4`` to stream one world's trajectory to a compact
+sidecar and render it with the optional host-side encoder.
 """
 
 from argparse import ArgumentParser
@@ -142,7 +142,7 @@ def main() -> None:
         f"vertical_velocity={world_velocity[2]:.6f}"
     )
     if args.record:
-        trajectory_path = args.record.with_suffix(".trajectory.json")
+        trajectory_path = args.record.with_suffix(".trajectory.tstraj")
         recorded = (
             f"worlds 0..{args.record_grid - 1}"
             if args.record_grid is not None

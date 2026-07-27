@@ -9,6 +9,31 @@ state as Python objects.
 This work targets CPU RAM. Device allocator usage is measured separately and is
 not hidden inside the host-memory result.
 
+## Implementation result
+
+The bounded recording path is implemented:
+
+- `Simulation.record` writes one packed sample at a time through
+  `Tensor.data()`;
+- `.trajectory.tstraj` stores fixed-width little-endian float records;
+- rendering reads only one qpos sample at a time;
+- playback indices are generated lazily;
+- JSON interchange is an explicit streaming export;
+- isolated-process recording-memory benchmarks cover synthetic length scaling
+  and the Jenga acceptance workload.
+
+The full CUDA acceptance run used 10 levels, 256 simulated worlds, 64 recorded
+worlds, 1,000 steps, and sampling every 10 steps. Its raw numeric payload was
+10,083,840 bytes and the final sidecar was 10,084,235 bytes. Peak RSS increased
+by about 15 MiB between the warmed-up and completed snapshots, passing the
+32 MiB recording-overhead gate.
+
+That run also exposed a separate compiler-memory problem: the 10-level Jenga
+TinyJit warmup retained roughly 12.3 GiB of host RSS before recording started.
+The streamed recorder no longer scales with trajectory length, but reducing
+tinygrad graph construction/capture memory for this large contact workload
+requires a separate physics-compilation investigation.
+
 ## Current behavior
 
 The unrecorded `Simulation.run` path does not call `Tensor.tolist`, and its
