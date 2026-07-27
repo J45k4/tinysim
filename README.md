@@ -190,9 +190,3 @@ diagonal body-frame inertia, and explicit inertials. Actuators on ball/free
 joints require an explicit transmission and are rejected for now. Mesh
 collision, constraint friction, equality constraints, general external
 wrenches, stateful actuators, and URDF import are not silently approximated.
-
-MuJoCo, JAX, Bullet, and Isaac are not runtime dependencies. No custom UOps have
-been introduced because profiling has not justified an abstraction-specific
-kernel. See [physics and gradients](docs/physics.md),
-[the UOp decision](docs/uop-decision.md), [backend support](docs/backend-support.md),
-and [the benchmark protocol](benchmarks/README.md).
