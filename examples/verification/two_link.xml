@@ -1,0 +1,16 @@
+<mujoco model="two_link_verification">
+  <compiler angle="radian"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="upper">
+      <inertial pos="0 0 -0.5" mass="1" diaginertia="0.1 0.1 0.01"/>
+      <joint name="shoulder" type="hinge" axis="0 1 0" damping="0.04" limited="true" range="-1 1"/>
+      <geom name="upper_rod" type="capsule" size="0.04 0.5" pos="0 0 -0.5"/>
+      <body name="lower" pos="0 0 -1">
+        <inertial pos="0 0 -0.4" mass="0.7" diaginertia="0.06 0.06 0.008"/>
+        <joint name="elbow" type="hinge" axis="0 1 0" damping="0.03" limited="true" range="-1 1"/>
+        <geom name="lower_rod" type="capsule" size="0.035 0.4" pos="0 0 -0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

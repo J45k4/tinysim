@@ -1,0 +1,14 @@
+<mujoco model="hierarchy">
+  <worldbody>
+    <body name="base" pos="1 0 0">
+      <inertial mass="3" diaginertia="1 1 1"/>
+      <joint name="base_slide" type="slide" pos="0.2 0 0" axis="1 0 0"/>
+      <geom name="base_box" type="box" size="0.2 0.3 0.4" pos="0.4 0 0"/>
+      <body name="tip" pos="2 0 0">
+        <inertial pos="0.1 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+        <joint name="tip_hinge" pos="0.1 0 0" axis="0 0 1"/>
+        <geom name="tip_ball" type="sphere" size="0.1" pos="0.3 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

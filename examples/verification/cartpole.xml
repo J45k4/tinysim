@@ -1,0 +1,23 @@
+<mujoco model="imported_cartpole">
+  <compiler angle="radian"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="cart">
+      <inertial mass="1" diaginertia="0.05 0.05 0.05"/>
+      <joint name="rail" type="slide" axis="1 0 0"
+             limited="true" range="-2 2"/>
+      <geom name="cart_box" type="box" size="0.2 0.12 0.1"/>
+      <body name="pole" pos="0 0 0.1">
+        <inertial pos="0 0 0.5" mass="0.1" diaginertia="0.01 0.01 0.001"/>
+        <joint name="pole_hinge" type="hinge" axis="0 1 0" damping="0.01"/>
+        <geom name="pole_rod" type="capsule" size="0.025 0.5" pos="0 0 0.5"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="cart_motor" joint="rail" gear="1" ctrlrange="-10 10"/>
+  </actuator>
+  <keyframe>
+    <key name="near_upright" qpos="0 0.05"/>
+  </keyframe>
+</mujoco>

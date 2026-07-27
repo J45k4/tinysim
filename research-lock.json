@@ -1,0 +1,11 @@
+{
+  "tinygrad": {
+    "commit": "5d1aa8490144ae8fe3bdb52fec4827c933c578b5",
+    "source": "tinygrad"
+  },
+  "mujoco": {
+    "commit": "0ae308c50cced62ddf4484974230a1613476fb0c",
+    "source": "../mujoco",
+    "role": "optional validation oracle"
+  }
+}
