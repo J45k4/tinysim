@@ -29,10 +29,12 @@ by about 15 MiB between the warmed-up and completed snapshots, passing the
 32 MiB recording-overhead gate.
 
 That run also exposed a separate compiler-memory problem: the 10-level Jenga
-TinyJit warmup retained roughly 12.3 GiB of host RSS before recording started.
-The streamed recorder no longer scales with trajectory length, but reducing
-tinygrad graph construction/capture memory for this large contact workload
-requires a separate physics-compilation investigation.
+process held roughly 12.3 GB of host RSS after TinyJit warmup and before
+recording started. Fresh-process phase probes show that this value combines a
+large contact compiler graph, transient compilation allocations, and allocator
+retention; it is not raw state memory. The streamed recorder no longer scales
+with trajectory length. The findings and next work are in the
+[compiler-memory reduction plan](compiler-memory-plan.md).
 
 ## Current behavior
 
