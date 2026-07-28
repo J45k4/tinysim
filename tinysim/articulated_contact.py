@@ -15,7 +15,7 @@ from .collision import (
     sphere_plane,
     sphere_sphere,
 )
-from .compile import CompiledModel
+from .compile import CollisionGroup, CompiledModel
 from .contact import smooth_contact
 from .kinematics import Kinematics
 from .math import cross
@@ -251,6 +251,229 @@ def _collide(
     raise AssertionError(f"compiler admitted unsupported pair {(kind_a, kind_b)}")
 
 
+def _group_static(
+    value: Tensor,
+    indices: tuple[int, ...],
+    batch: int,
+) -> Tensor:
+    selected = value[list(indices)]
+    return selected.unsqueeze(0).expand((batch,) + selected.shape)
+
+
+def _group_capsule_endpoints(
+    position: Tensor,
+    quaternion: Tensor,
+    half_length: Tensor,
+) -> tuple[Tensor, Tensor]:
+    axis = rotate(
+        quaternion,
+        Tensor(
+            [0.0, 0.0, 1.0],
+            dtype=position.dtype,
+            device=position.device,
+        ).expand(position.shape),
+    )
+    offset = axis * half_length.unsqueeze(-1)
+    return position - offset, position + offset
+
+
+def _collide_group(
+    model: CompiledModel,
+    group: CollisionGroup,
+    positions: Tensor,
+    quaternions: Tensor,
+) -> ContactGeometry:
+    """Evaluates one primitive kind with collision pair as a tensor axis."""
+
+    batch = positions.shape[0]
+    a, b = list(group.geom_a), list(group.geom_b)
+    position_a, position_b = positions[:, a], positions[:, b]
+    quaternion_a, quaternion_b = quaternions[:, a], quaternions[:, b]
+    size_a = _group_static(model.geom_size, group.geom_a, batch)
+    size_b = _group_static(model.geom_size, group.geom_b, batch)
+    margin = model.contact.margin
+
+    if group.kind_b == "plane":
+        normal = rotate(
+            quaternion_b,
+            Tensor(
+                [0.0, 0.0, 1.0],
+                dtype=positions.dtype,
+                device=positions.device,
+            ).expand(position_b.shape),
+        )
+        if group.kind_a == "sphere":
+            return sphere_plane(
+                position_a,
+                size_a[..., 0],
+                position_b,
+                normal,
+                margin=margin,
+            )
+        if group.kind_a == "capsule":
+            start, end = _group_capsule_endpoints(
+                position_a,
+                quaternion_a,
+                size_a[..., 1],
+            )
+            return capsule_plane(
+                start,
+                end,
+                size_a[..., 0],
+                position_b,
+                normal,
+                margin=margin,
+            )
+        if group.kind_a == "box":
+            return box_plane(
+                position_a,
+                size_a[..., :3],
+                quaternion_a,
+                position_b,
+                normal,
+                margin=margin,
+            )
+    if group.kind_a == group.kind_b == "sphere":
+        return sphere_sphere(
+            position_a,
+            size_a[..., 0],
+            position_b,
+            size_b[..., 0],
+            margin=margin,
+        )
+    if group.kind_a == "sphere" and group.kind_b == "capsule":
+        start, end = _group_capsule_endpoints(
+            position_b,
+            quaternion_b,
+            size_b[..., 1],
+        )
+        return sphere_capsule(
+            position_a,
+            size_a[..., 0],
+            start,
+            end,
+            size_b[..., 0],
+            margin=margin,
+        )
+    if group.kind_a == group.kind_b == "capsule":
+        start_a, end_a = _group_capsule_endpoints(
+            position_a,
+            quaternion_a,
+            size_a[..., 1],
+        )
+        start_b, end_b = _group_capsule_endpoints(
+            position_b,
+            quaternion_b,
+            size_b[..., 1],
+        )
+        return capsule_capsule(
+            start_a,
+            end_a,
+            size_a[..., 0],
+            start_b,
+            end_b,
+            size_b[..., 0],
+            margin=margin,
+        )
+    if group.kind_a == group.kind_b == "box":
+        return box_box(
+            position_a,
+            size_a[..., :3],
+            quaternion_a,
+            position_b,
+            size_b[..., :3],
+            quaternion_b,
+            margin=margin,
+        )
+    raise AssertionError(
+        "compiler admitted unsupported collision group "
+        f"{(group.kind_a, group.kind_b)}"
+    )
+
+
+def _group_point_velocity(
+    kinematics: Kinematics,
+    qvel: Tensor,
+    bodies: tuple[int, ...],
+    dofs: tuple[int, ...],
+    point: Tensor,
+) -> Tensor:
+    if not any(body != -1 for body in bodies):
+        return point * 0.0
+    linear_dofs = tuple(
+        tuple(address + component for component in range(3))
+        for address in dofs
+    )
+    angular_dofs = tuple(
+        tuple(address + component for component in range(3, 6))
+        for address in dofs
+    )
+    safe_bodies = tuple(max(body, 0) for body in bodies)
+    linear = (
+        kinematics.dof_axis[:, linear_dofs]
+        * qvel[:, linear_dofs].unsqueeze(-1)
+    ).sum(axis=-2)
+    angular = (
+        kinematics.dof_axis[:, angular_dofs]
+        * qvel[:, angular_dofs].unsqueeze(-1)
+    ).sum(axis=-2)
+    velocity = linear + cross(
+        angular,
+        point - kinematics.joint_pos[:, safe_bodies],
+    )
+    dynamic = Tensor(
+        tuple(body != -1 for body in bodies),
+        dtype=dtypes.bool,
+        device=point.device,
+    ).reshape(1, len(bodies), 1)
+    return dynamic.where(velocity, 0.0)
+
+
+def _group_generalized_force(
+    kinematics: Kinematics,
+    bodies: tuple[int, ...],
+    dofs: tuple[int, ...],
+    point: Tensor,
+    force: Tensor,
+) -> Tensor:
+    if not any(body != -1 for body in bodies):
+        return Tensor.zeros(
+            point.shape[0],
+            point.shape[1],
+            6,
+            dtype=point.dtype,
+            device=point.device,
+        )
+    linear_dofs = tuple(
+        tuple(address + component for component in range(3))
+        for address in dofs
+    )
+    angular_dofs = tuple(
+        tuple(address + component for component in range(3, 6))
+        for address in dofs
+    )
+    safe_bodies = tuple(max(body, 0) for body in bodies)
+    translation = (
+        kinematics.dof_axis[:, linear_dofs] * force.unsqueeze(-2)
+    ).sum(axis=-1)
+    torque = cross(
+        point - kinematics.joint_pos[:, safe_bodies],
+        force,
+    )
+    rotation = (
+        kinematics.dof_axis[:, angular_dofs] * torque.unsqueeze(-2)
+    ).sum(axis=-1)
+    dynamic = Tensor(
+        tuple(body != -1 for body in bodies),
+        dtype=dtypes.bool,
+        device=point.device,
+    ).reshape(1, len(bodies), 1)
+    return dynamic.where(
+        Tensor.cat(translation, rotation, dim=-1),
+        0.0,
+    )
+
+
 def contacts(model: CompiledModel, kinematics: Kinematics) -> ContactBatch:
     """Evaluates every compiler-selected pair into one fixed contact slot."""
 
@@ -394,70 +617,54 @@ def smooth_free_body_generalized_force(
         if geom_friction.dtype != model.dtype or geom_friction.device != model.device:
             raise TypeError("geom_friction must match model dtype/device")
 
+    if not model.collision_groups:
+        return Tensor.zeros(
+            qvel.shape[0],
+            model.nv,
+            dtype=qvel.dtype,
+            device=qvel.device,
+        )
+
     positions, quaternions = geometry_transforms(model, kinematics)
-    zero6 = Tensor.zeros(
-        qvel.shape[0],
-        6,
-        dtype=qvel.dtype,
-        device=qvel.device,
-    )
-    body_forces = [zero6 for _ in range(model.nbody)]
-
-    def point_velocity(body: int, point: Tensor) -> Tensor:
-        if body == -1:
-            return point * 0.0
-        address = model.joint_dof[model.joint_for_body[body]]
-        linear = (
-            kinematics.dof_axis[:, address : address + 3]
-            * qvel[:, address : address + 3].unsqueeze(-1)
-        ).sum(axis=1)
-        angular = (
-            kinematics.dof_axis[:, address + 3 : address + 6]
-            * qvel[:, address + 3 : address + 6].unsqueeze(-1)
-        ).sum(axis=1)
-        return linear + cross(
-            angular,
-            point - kinematics.joint_pos[:, body],
-        )
-
-    def generalized(body: int, point: Tensor, force: Tensor) -> Tensor:
-        address = model.joint_dof[model.joint_for_body[body]]
-        translation = (
-            kinematics.dof_axis[:, address : address + 3]
-            * force.unsqueeze(1)
-        ).sum(axis=-1)
-        torque = cross(
-            point - kinematics.joint_pos[:, body],
-            force,
-        )
-        rotation = (
-            kinematics.dof_axis[:, address + 3 : address + 6]
-            * torque.unsqueeze(1)
-        ).sum(axis=-1)
-        return Tensor.cat(translation, rotation, dim=-1)
-
     spec = model.contact
-    for a, b in model.collision_pairs:
-        geometry = _collide(
+    endpoint_forces: list[Tensor] = []
+    for group in model.collision_groups:
+        geometry = _collide_group(
             model,
-            a,
-            b,
+            group,
             positions,
             quaternions,
         )
         friction = (
             (
-                geom_friction[:, a] * geom_friction[:, b]
+                geom_friction[:, list(group.geom_a)]
+                * geom_friction[:, list(group.geom_b)]
             ).sqrt()
             if geom_friction is not None
             else (
-                model.geom_friction[a] * model.geom_friction[b]
-            ).sqrt()
+                model.geom_friction[list(group.geom_a)]
+                * model.geom_friction[list(group.geom_b)]
+            ).sqrt().unsqueeze(0).expand(
+                qvel.shape[0],
+                len(group.geom_a),
+            )
         ) * spec.friction
         forces = smooth_contact(
             geometry,
-            point_velocity(model.geoms[a].body, geometry.point_a),
-            point_velocity(model.geoms[b].body, geometry.point_b),
+            _group_point_velocity(
+                kinematics,
+                qvel,
+                group.body_a,
+                group.dof_a,
+                geometry.point_a,
+            ),
+            _group_point_velocity(
+                kinematics,
+                qvel,
+                group.body_b,
+                group.dof_b,
+                geometry.point_b,
+            ),
             ContactParams(
                 stiffness=spec.stiffness,
                 damping=spec.damping,
@@ -467,18 +674,39 @@ def smooth_free_body_generalized_force(
                 velocity_smoothing=spec.velocity_smoothing,
             ),
         )
-        body_a = model.geoms[a].body
-        body_b = model.geoms[b].body
-        if body_a != -1:
-            body_forces[body_a] = body_forces[body_a] + generalized(
-                body_a,
-                geometry.point_a,
-                forces.force_a,
+        endpoint_forces.extend(
+            (
+                _group_generalized_force(
+                    kinematics,
+                    group.body_a,
+                    group.dof_a,
+                    geometry.point_a,
+                    forces.force_a,
+                ),
+                _group_generalized_force(
+                    kinematics,
+                    group.body_b,
+                    group.dof_b,
+                    geometry.point_b,
+                    forces.force_b,
+                ),
             )
-        if body_b != -1:
-            body_forces[body_b] = body_forces[body_b] + generalized(
-                body_b,
-                geometry.point_b,
-                forces.force_b,
-            )
-    return Tensor.cat(*body_forces, dim=-1)
+        )
+
+    endpoints = Tensor.cat(*endpoint_forces, dim=1)
+    incident = endpoints[:, model.free_body_incident_endpoints]
+    incident_mask = Tensor(
+        model.free_body_incident_mask,
+        dtype=qvel.dtype,
+        device=qvel.device,
+    ).reshape(
+        1,
+        model.nbody,
+        len(model.free_body_incident_endpoints[0]),
+        1,
+    )
+    body_forces = (incident * incident_mask).sum(axis=2)
+    return body_forces[
+        :,
+        model.free_body_dof_bodies,
+    ].reshape(qvel.shape[0], model.nv)

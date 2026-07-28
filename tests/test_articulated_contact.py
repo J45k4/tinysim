@@ -2,7 +2,11 @@ import unittest
 
 from tinygrad import Tensor
 
-from tinysim.articulated_contact import contacts
+from tinysim.articulated_contact import (
+    contacts,
+    smooth_free_body_generalized_force,
+    smooth_generalized_force,
+)
 from tinysim.compile import compile_model
 from tinysim.kinematics import forward_kinematics
 from tinysim.model import (
@@ -98,6 +102,76 @@ class TestArticulatedContact(unittest.TestCase):
             0.5,
             places=6,
         )
+
+    def test_batched_free_body_force_matches_general_jacobian_path(self):
+        model = compile_model(
+            ModelSpec(
+                bodies=[
+                    BodySpec("a", inertia=(0.1, 0.1, 0.1)),
+                    BodySpec("b", inertia=(0.1, 0.1, 0.1)),
+                ],
+                # Reverse joint order to prove the batched result follows DoF
+                # order rather than assuming bodies and joints share an order.
+                joints=[
+                    JointSpec("free_b", 1, "free"),
+                    JointSpec("free_a", 0, "free"),
+                ],
+                geoms=[
+                    GeomSpec("box_a", 0, "box", (0.5, 0.5, 0.5)),
+                    GeomSpec("box_b", 1, "box", (0.5, 0.5, 0.5)),
+                    GeomSpec("floor", -1, "plane", (0.0, 0.0, 0.1)),
+                ],
+                collision_pairs=[
+                    ("floor", "box_a"),
+                    ("box_b", "floor"),
+                    ("box_b", "box_a"),
+                ],
+                contact=ContactSpec(
+                    mode="smooth",
+                    stiffness=100.0,
+                    damping=2.0,
+                    friction=0.4,
+                ),
+            )
+        )
+        self.assertEqual(
+            tuple(
+                (group.kind_a, group.kind_b, len(group.geom_a))
+                for group in model.collision_groups
+            ),
+            (("box", "box", 1), ("box", "plane", 2)),
+        )
+        # qpos and qvel follow reversed joint order: body b, then body a.
+        qpos = Tensor(
+            [[
+                0.8, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0,
+            ]]
+        )
+        qvel = Tensor(
+            [[
+                -0.1, 0.2, -0.3, 0.0, 0.1, 0.2,
+                0.3, -0.2, -0.4, 0.2, 0.0, -0.1,
+            ]]
+        )
+        kinematics = forward_kinematics(model, qpos)
+        contact_batch = contacts(model, kinematics)
+        reference = smooth_generalized_force(
+            model,
+            contact_batch,
+            qvel,
+        ).realize()
+        batched = smooth_free_body_generalized_force(
+            model,
+            kinematics,
+            qvel,
+        ).realize()
+        self.assertEqual(batched.shape, reference.shape)
+        for actual, expected in zip(
+            batched.tolist()[0],
+            reference.tolist()[0],
+        ):
+            self.assertAlmostEqual(actual, expected, delta=2e-5)
 
     def test_smooth_contact_is_in_articulated_step_and_differentiable(self):
         model = ball_model("smooth")

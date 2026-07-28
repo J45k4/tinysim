@@ -18,6 +18,20 @@ from .model import (
 
 
 @dataclass(frozen=True)
+class CollisionGroup:
+    """Collision pairs sharing one batched narrow-phase implementation."""
+
+    kind_a: str
+    kind_b: str
+    geom_a: tuple[int, ...]
+    geom_b: tuple[int, ...]
+    body_a: tuple[int, ...]
+    body_b: tuple[int, ...]
+    dof_a: tuple[int, ...]
+    dof_b: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class CompiledModel:
     name: str
     bodies: tuple[BodySpec, ...]
@@ -39,6 +53,10 @@ class CompiledModel:
     actuator_dof: tuple[int, ...]
     geoms: tuple[GeomSpec, ...]
     collision_pairs: tuple[tuple[int, int], ...]
+    collision_groups: tuple[CollisionGroup, ...]
+    free_body_incident_endpoints: tuple[tuple[int, ...], ...]
+    free_body_incident_mask: tuple[tuple[float, ...], ...]
+    free_body_dof_bodies: tuple[int, ...]
     contact: ContactSpec
     body_mass: Tensor
     body_inertia: Tensor
@@ -365,6 +383,79 @@ def compile_model(
         collision_pairs.append((a, b))
         seen_pairs.add(key)
 
+    grouped_pairs: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for a, b in collision_pairs:
+        kinds = (normalized_geoms[a].kind, normalized_geoms[b].kind)
+        if kinds not in supported_pairs:
+            a, b = b, a
+            kinds = kinds[::-1]
+        grouped_pairs.setdefault(kinds, []).append((a, b))
+
+    collision_groups: list[CollisionGroup] = []
+    for (kind_a, kind_b), pairs in sorted(grouped_pairs.items()):
+        pairs = sorted(pairs)
+        geom_a = tuple(a for a, _ in pairs)
+        geom_b = tuple(b for _, b in pairs)
+        body_a = tuple(normalized_geoms[a].body for a in geom_a)
+        body_b = tuple(normalized_geoms[b].body for b in geom_b)
+
+        def body_dof(body: int) -> int:
+            return 0 if body == -1 else joint_dof[joint_for_body[body]]
+
+        collision_groups.append(
+            CollisionGroup(
+                kind_a=kind_a,
+                kind_b=kind_b,
+                geom_a=geom_a,
+                geom_b=geom_b,
+                body_a=body_a,
+                body_b=body_b,
+                dof_a=tuple(body_dof(body) for body in body_a),
+                dof_b=tuple(body_dof(body) for body in body_b),
+            )
+        )
+
+    incident_endpoints: list[list[int]] = [[] for _ in spec.bodies]
+    endpoint_offset = 0
+    for group in collision_groups:
+        pair_count = len(group.geom_a)
+        for pair, body in enumerate(group.body_a):
+            if body != -1:
+                incident_endpoints[body].append(endpoint_offset + pair)
+        for pair, body in enumerate(group.body_b):
+            if body != -1:
+                incident_endpoints[body].append(
+                    endpoint_offset + pair_count + pair
+                )
+        endpoint_offset += 2 * pair_count
+    maximum_incidents = max(
+        (len(endpoints) for endpoints in incident_endpoints),
+        default=0,
+    )
+    padded_width = max(maximum_incidents, 1)
+    free_body_incident_endpoints = tuple(
+        tuple(endpoints + [0] * (padded_width - len(endpoints)))
+        for endpoints in incident_endpoints
+    )
+    free_body_incident_mask = tuple(
+        tuple(
+            [1.0] * len(endpoints)
+            + [0.0] * (padded_width - len(endpoints))
+        )
+        for endpoints in incident_endpoints
+    )
+    free_body_dof_bodies = tuple(
+        body
+        for _, body in sorted(
+            (
+                joint_dof[joint_for_body[body]],
+                body,
+            )
+            for body in range(len(spec.bodies))
+            if normalized_joints[joint_for_body[body]].kind == "free"
+        )
+    )
+
     contact = spec.contact
     if contact.mode not in ("none", "smooth", "constraint"):
         raise ValueError(f"unsupported contact mode {contact.mode!r}")
@@ -423,6 +514,10 @@ def compile_model(
         actuator_dof=tuple(actuator_dof),
         geoms=tuple(normalized_geoms),
         collision_pairs=tuple(collision_pairs),
+        collision_groups=tuple(collision_groups),
+        free_body_incident_endpoints=free_body_incident_endpoints,
+        free_body_incident_mask=free_body_incident_mask,
+        free_body_dof_bodies=free_body_dof_bodies,
         contact=contact,
         body_mass=tensor([body.mass for body in spec.bodies]),
         body_inertia=tensor([body.inertia for body in spec.bodies]),

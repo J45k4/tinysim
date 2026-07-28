@@ -55,6 +55,17 @@ python3 -m benchmarks.bench_matrix \
 `python3 -m benchmarks.bench_batch_scaling` runs forward scaling without
 backward or subsystem samples. Both accept the matrix runner's CLI options.
 
+The compiler-memory benchmark runs in a fresh child process and reports current
+RSS, lifetime peak RSS, tinygrad device-resident bytes, live UOps, captured
+calls, and all four TinyJit phases. The acceptance case is the 10-level,
+256-world Jenga support graph and fails if peak resident host memory reaches
+6 GB:
+
+```bash
+PYTHONPATH=.:tinygrad DEV=CUDA \
+  python3 -m benchmarks.bench_compiler_memory --acceptance
+```
+
 The recording-memory benchmark runs every case in a fresh subprocess so
 process high-water RSS remains attributable to one workload:
 

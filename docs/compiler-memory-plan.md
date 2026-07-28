@@ -19,6 +19,59 @@ incremental host-memory overhead bounded. Raw simulation tensors are also not
 the cause: their device-resident allocation is only a few MiB in the full
 workload.
 
+## Implementation result
+
+The independent free-body smooth-contact path now implements the high-leverage
+parts of this plan:
+
+- model compilation canonicalizes collision pairs into primitive-kind groups;
+- one tensor call evaluates every box-plane pair in its group;
+- one tensor call evaluates every box-box pair in its group;
+- endpoint point velocities and generalized wrenches are batched;
+- a padded incident-endpoint table gathers and reduces forces per body;
+- output is restored to generalized-coordinate order even when joint and body
+  authoring orders differ;
+- the compiler-memory benchmark enforces the full gate in a fresh process.
+
+The acceptance command is:
+
+```bash
+PYTHONPATH=.:tinygrad DEV=CUDA \
+  python3 -m benchmarks.bench_compiler_memory --acceptance
+```
+
+On the 10-level, 256-world CUDA support workload it reports:
+
+| Measurement | Result |
+| --- | ---: |
+| Peak resident host memory | 2,522,877,952 bytes |
+| Resident host memory after capture | 801,529,856 bytes |
+| CUDA allocator-resident memory after capture | 5,188,640 bytes |
+| Live UOps after capture | 151,062 |
+| Captured calls | 68 |
+| First call | 56.75 seconds |
+| Capture | 29.48 seconds |
+| Warm replay | 5.53 milliseconds |
+
+The strict acceptance limit is 6,000,000,000 bytes of peak RSS, so the workload
+uses about 42% of the allowed memory. The process virtual-address-space peak is
+not used as a physical-memory measurement.
+
+For the controlled 10-level, one-world probe, batching reduced peak RSS from
+about 9.24 GB to 2.23 GB, captured calls from 312 to 77, and warm replay from
+roughly 15 ms to 5 ms. The earlier 256-world recording warmup held about
+12.29 GB current RSS; the isolated acceptance process now settles below
+0.80 GB after capture.
+
+All 179 native CPU tests pass, with four expected optional-reference skips.
+The equivalence suite includes mixed box-plane/box-box contact, reversed pair
+orientation, reversed joint order, differentiability, TinyJit replay, and the
+general contact-Jacobian reference path.
+
+The compact SAT rewrite, custom UOps, cache-clearing workarounds, and upstream
+TinyJit compaction are not required for the 6 GB gate. They remain conditional
+follow-up work and require new profiling evidence.
+
 ## Investigation result
 
 The dominant cost is the expression graph produced by independently compiling
