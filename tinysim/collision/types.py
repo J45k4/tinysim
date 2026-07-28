@@ -54,6 +54,26 @@ class ContactGeometry:
 
 
 @dataclass(frozen=True)
+class ContactManifold(ContactGeometry):
+    """Fixed contact slots in the final scalar dimension."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.distance.ndim < 1:
+            raise ValueError("contact manifold requires a slot dimension")
+
+    @property
+    def capacity(self) -> int:
+        return int(self.distance.shape[-1])
+
+    @property
+    def weights(self) -> Tensor:
+        active = self.active.cast(self.distance.dtype)
+        count = active.sum(axis=-1, keepdim=True).maximum(1.0)
+        return active / count
+
+
+@dataclass(frozen=True)
 class ContactParams:
     """Parameters for the differentiable compliant contact law.
 

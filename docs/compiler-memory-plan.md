@@ -28,6 +28,7 @@ parts of this plan:
 - one tensor call evaluates every box-plane pair in its group;
 - one tensor call evaluates every box-box pair in its group;
 - endpoint point velocities and generalized wrenches are batched;
+- primitive groups use fixed 1/2/4-slot contact manifolds;
 - a padded incident-endpoint table gathers and reduces forces per body;
 - output is restored to generalized-coordinate order even when joint and body
   authoring orders differ;
@@ -44,26 +45,26 @@ On the 10-level, 256-world CUDA support workload it reports:
 
 | Measurement | Result |
 | --- | ---: |
-| Peak resident host memory | 2,522,877,952 bytes |
-| Resident host memory after capture | 801,529,856 bytes |
-| CUDA allocator-resident memory after capture | 5,188,640 bytes |
-| Live UOps after capture | 151,062 |
-| Captured calls | 68 |
-| First call | 56.75 seconds |
-| Capture | 29.48 seconds |
-| Warm replay | 5.53 milliseconds |
+| Peak resident host memory | 3,025,481,728 bytes |
+| Resident host memory after capture | 975,769,600 bytes |
+| CUDA allocator-resident memory after capture | 6,914,768 bytes |
+| Live UOps after capture | 156,717 |
+| Captured calls | 70 |
+| First call | 55.72 seconds |
+| Capture | 29.47 seconds |
+| Warm replay | 5.78 milliseconds |
 
 The strict acceptance limit is 6,000,000,000 bytes of peak RSS, so the workload
-uses about 42% of the allowed memory. The process virtual-address-space peak is
+uses about 51% of the allowed memory. The process virtual-address-space peak is
 not used as a physical-memory measurement.
 
 For the controlled 10-level, one-world probe, batching reduced peak RSS from
 about 9.24 GB to 2.23 GB, captured calls from 312 to 77, and warm replay from
 roughly 15 ms to 5 ms. The earlier 256-world recording warmup held about
 12.29 GB current RSS; the isolated acceptance process now settles below
-0.80 GB after capture.
+0.98 GB after capture.
 
-All 179 native CPU tests pass, with four expected optional-reference skips.
+All 187 native CPU tests pass, with four expected optional-reference skips.
 The equivalence suite includes mixed box-plane/box-box contact, reversed pair
 orientation, reversed joint order, differentiability, TinyJit replay, and the
 general contact-Jacobian reference path.

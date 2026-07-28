@@ -9,17 +9,16 @@ JointKind = Literal["fixed", "hinge", "slide", "ball", "free"]
 ActuatorKind = Literal["motor", "position", "velocity"]
 GeomKind = Literal["plane", "sphere", "capsule", "box"]
 ContactMode = Literal["none", "smooth", "constraint"]
-SUPPORTED_COLLISION_PAIRS = frozenset(
-    {
-        ("sphere", "plane"),
-        ("sphere", "sphere"),
-        ("sphere", "capsule"),
-        ("capsule", "plane"),
-        ("capsule", "capsule"),
-        ("box", "box"),
-        ("box", "plane"),
-    }
-)
+COLLISION_MANIFOLD_CAPACITY = {
+    ("sphere", "plane"): 1,
+    ("sphere", "sphere"): 1,
+    ("sphere", "capsule"): 1,
+    ("capsule", "plane"): 2,
+    ("capsule", "capsule"): 2,
+    ("box", "box"): 4,
+    ("box", "plane"): 4,
+}
+SUPPORTED_COLLISION_PAIRS = frozenset(COLLISION_MANIFOLD_CAPACITY)
 
 
 class UnsupportedModelError(ValueError):

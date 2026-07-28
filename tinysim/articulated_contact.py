@@ -6,14 +6,15 @@ from tinygrad import Tensor, dtypes
 
 from .collision import (
     ContactGeometry,
+    ContactManifold,
     ContactParams,
-    box_box,
-    box_plane,
-    capsule_capsule,
-    capsule_plane,
-    sphere_capsule,
-    sphere_plane,
-    sphere_sphere,
+    box_box_manifold,
+    box_plane_manifold,
+    capsule_capsule_manifold,
+    capsule_plane_manifold,
+    sphere_capsule_manifold,
+    sphere_plane_manifold,
+    sphere_sphere_manifold,
 )
 from .compile import CollisionGroup, CompiledModel
 from .contact import smooth_contact
@@ -27,6 +28,9 @@ class ContactBatch:
     geometry: ContactGeometry
     jacobian_a: Tensor
     jacobian_b: Tensor
+    weight: Tensor
+    geom_a: tuple[int, ...]
+    geom_b: tuple[int, ...]
 
     @property
     def constraint_jacobian(self) -> Tensor:
@@ -125,132 +129,6 @@ def point_jacobian(
     return Tensor.stack(*columns, dim=-1)
 
 
-def _capsule_endpoints(
-    model: CompiledModel,
-    index: int,
-    position: Tensor,
-    quaternion: Tensor,
-) -> tuple[Tensor, Tensor]:
-    axis = rotate(
-        quaternion,
-        Tensor([0.0, 0.0, 1.0], dtype=position.dtype, device=position.device)
-        .unsqueeze(0)
-        .expand(position.shape[0], 3),
-    )
-    offset = axis * model.geom_size[index, 1]
-    return position - offset, position + offset
-
-
-def _flip(geometry: ContactGeometry) -> ContactGeometry:
-    return ContactGeometry(
-        geometry.distance,
-        -geometry.normal,
-        geometry.point_b,
-        geometry.point_a,
-        geometry.active,
-    )
-
-
-def _collide(
-    model: CompiledModel,
-    a: int,
-    b: int,
-    positions: Tensor,
-    quaternions: Tensor,
-) -> ContactGeometry:
-    kind_a, kind_b = model.geoms[a].kind, model.geoms[b].kind
-    if kind_a == "plane":
-        return _flip(_collide(model, b, a, positions, quaternions))
-    margin = model.contact.margin
-    if kind_b == "plane":
-        normal = rotate(
-            quaternions[:, b],
-            Tensor(
-                [0.0, 0.0, 1.0],
-                dtype=positions.dtype,
-                device=positions.device,
-            ).unsqueeze(0).expand(positions.shape[0], 3),
-        )
-        if kind_a == "sphere":
-            return sphere_plane(
-                positions[:, a],
-                model.geom_size[a, 0],
-                positions[:, b],
-                normal,
-                margin=margin,
-            )
-        if kind_a == "capsule":
-            start, end = _capsule_endpoints(
-                model, a, positions[:, a], quaternions[:, a]
-            )
-            return capsule_plane(
-                start,
-                end,
-                model.geom_size[a, 0],
-                positions[:, b],
-                normal,
-                margin=margin,
-            )
-        if kind_a == "box":
-            return box_plane(
-                positions[:, a],
-                _batched(model.geom_size[a, :3], positions.shape[0]),
-                quaternions[:, a],
-                positions[:, b],
-                normal,
-                margin=margin,
-            )
-    if kind_a == kind_b == "sphere":
-        return sphere_sphere(
-            positions[:, a],
-            model.geom_size[a, 0],
-            positions[:, b],
-            model.geom_size[b, 0],
-            margin=margin,
-        )
-    if kind_a == "capsule" and kind_b == "sphere":
-        return _flip(_collide(model, b, a, positions, quaternions))
-    if kind_a == "sphere" and kind_b == "capsule":
-        start, end = _capsule_endpoints(
-            model, b, positions[:, b], quaternions[:, b]
-        )
-        return sphere_capsule(
-            positions[:, a],
-            model.geom_size[a, 0],
-            start,
-            end,
-            model.geom_size[b, 0],
-            margin=margin,
-        )
-    if kind_a == kind_b == "capsule":
-        start_a, end_a = _capsule_endpoints(
-            model, a, positions[:, a], quaternions[:, a]
-        )
-        start_b, end_b = _capsule_endpoints(
-            model, b, positions[:, b], quaternions[:, b]
-        )
-        return capsule_capsule(
-            start_a,
-            end_a,
-            model.geom_size[a, 0],
-            start_b,
-            end_b,
-            model.geom_size[b, 0],
-            margin=margin,
-        )
-    if kind_a == kind_b == "box":
-        return box_box(
-            positions[:, a],
-            _batched(model.geom_size[a, :3], positions.shape[0]),
-            quaternions[:, a],
-            positions[:, b],
-            _batched(model.geom_size[b, :3], positions.shape[0]),
-            quaternions[:, b],
-            margin=margin,
-        )
-    raise AssertionError(f"compiler admitted unsupported pair {(kind_a, kind_b)}")
-
-
 def _group_static(
     value: Tensor,
     indices: tuple[int, ...],
@@ -282,7 +160,7 @@ def _collide_group(
     group: CollisionGroup,
     positions: Tensor,
     quaternions: Tensor,
-) -> ContactGeometry:
+) -> ContactManifold:
     """Evaluates one primitive kind with collision pair as a tensor axis."""
 
     batch = positions.shape[0]
@@ -303,7 +181,7 @@ def _collide_group(
             ).expand(position_b.shape),
         )
         if group.kind_a == "sphere":
-            return sphere_plane(
+            return sphere_plane_manifold(
                 position_a,
                 size_a[..., 0],
                 position_b,
@@ -316,7 +194,7 @@ def _collide_group(
                 quaternion_a,
                 size_a[..., 1],
             )
-            return capsule_plane(
+            return capsule_plane_manifold(
                 start,
                 end,
                 size_a[..., 0],
@@ -325,7 +203,7 @@ def _collide_group(
                 margin=margin,
             )
         if group.kind_a == "box":
-            return box_plane(
+            return box_plane_manifold(
                 position_a,
                 size_a[..., :3],
                 quaternion_a,
@@ -334,7 +212,7 @@ def _collide_group(
                 margin=margin,
             )
     if group.kind_a == group.kind_b == "sphere":
-        return sphere_sphere(
+        return sphere_sphere_manifold(
             position_a,
             size_a[..., 0],
             position_b,
@@ -347,7 +225,7 @@ def _collide_group(
             quaternion_b,
             size_b[..., 1],
         )
-        return sphere_capsule(
+        return sphere_capsule_manifold(
             position_a,
             size_a[..., 0],
             start,
@@ -366,7 +244,7 @@ def _collide_group(
             quaternion_b,
             size_b[..., 1],
         )
-        return capsule_capsule(
+        return capsule_capsule_manifold(
             start_a,
             end_a,
             size_a[..., 0],
@@ -376,7 +254,7 @@ def _collide_group(
             margin=margin,
         )
     if group.kind_a == group.kind_b == "box":
-        return box_box(
+        return box_box_manifold(
             position_a,
             size_a[..., :3],
             quaternion_a,
@@ -417,15 +295,15 @@ def _group_point_velocity(
         kinematics.dof_axis[:, angular_dofs]
         * qvel[:, angular_dofs].unsqueeze(-1)
     ).sum(axis=-2)
-    velocity = linear + cross(
-        angular,
-        point - kinematics.joint_pos[:, safe_bodies],
+    velocity = linear.unsqueeze(-2) + cross(
+        angular.unsqueeze(-2),
+        point - kinematics.joint_pos[:, safe_bodies].unsqueeze(-2),
     )
     dynamic = Tensor(
         tuple(body != -1 for body in bodies),
         dtype=dtypes.bool,
         device=point.device,
-    ).reshape(1, len(bodies), 1)
+    ).reshape(1, len(bodies), 1, 1)
     return dynamic.where(velocity, 0.0)
 
 
@@ -454,48 +332,80 @@ def _group_generalized_force(
     )
     safe_bodies = tuple(max(body, 0) for body in bodies)
     translation = (
-        kinematics.dof_axis[:, linear_dofs] * force.unsqueeze(-2)
+        kinematics.dof_axis[:, linear_dofs].unsqueeze(-3)
+        * force.unsqueeze(-2)
     ).sum(axis=-1)
     torque = cross(
-        point - kinematics.joint_pos[:, safe_bodies],
+        point - kinematics.joint_pos[:, safe_bodies].unsqueeze(-2),
         force,
     )
     rotation = (
-        kinematics.dof_axis[:, angular_dofs] * torque.unsqueeze(-2)
+        kinematics.dof_axis[:, angular_dofs].unsqueeze(-3)
+        * torque.unsqueeze(-2)
     ).sum(axis=-1)
     dynamic = Tensor(
         tuple(body != -1 for body in bodies),
         dtype=dtypes.bool,
         device=point.device,
-    ).reshape(1, len(bodies), 1)
+    ).reshape(1, len(bodies), 1, 1)
     return dynamic.where(
         Tensor.cat(translation, rotation, dim=-1),
         0.0,
-    )
+    ).sum(axis=-2)
 
 
 def contacts(model: CompiledModel, kinematics: Kinematics) -> ContactBatch:
-    """Evaluates every compiler-selected pair into one fixed contact slot."""
+    """Evaluates fixed manifold slots for every compiler-selected pair."""
 
     batch = kinematics.body_pos.shape[0]
     positions, quaternions = geometry_transforms(model, kinematics)
-    geometries: list[ContactGeometry] = []
+    distances: list[Tensor] = []
+    normals: list[Tensor] = []
+    points_a: list[Tensor] = []
+    points_b: list[Tensor] = []
+    activities: list[Tensor] = []
+    weights: list[Tensor] = []
     jacobian_a: list[Tensor] = []
     jacobian_b: list[Tensor] = []
-    for a, b in model.collision_pairs:
-        geometry = _collide(model, a, b, positions, quaternions)
-        geometries.append(geometry)
-        jacobian_a.append(
-            point_jacobian(
-                model, kinematics, model.geoms[a].body, geometry.point_a
-            )
+    geom_a: list[int] = []
+    geom_b: list[int] = []
+    for group in model.collision_groups:
+        manifold = _collide_group(
+            model,
+            group,
+            positions,
+            quaternions,
         )
-        jacobian_b.append(
-            point_jacobian(
-                model, kinematics, model.geoms[b].body, geometry.point_b
-            )
-        )
-    if not geometries:
+        pair_count = len(group.geom_a)
+        contact_count = pair_count * group.capacity
+        distances.append(manifold.distance.reshape(batch, contact_count))
+        normals.append(manifold.normal.reshape(batch, contact_count, 3))
+        points_a.append(manifold.point_a.reshape(batch, contact_count, 3))
+        points_b.append(manifold.point_b.reshape(batch, contact_count, 3))
+        activities.append(manifold.active.reshape(batch, contact_count))
+        weights.append(manifold.weights.reshape(batch, contact_count))
+        for pair in range(pair_count):
+            a, b = group.geom_a[pair], group.geom_b[pair]
+            for slot in range(group.capacity):
+                jacobian_a.append(
+                    point_jacobian(
+                        model,
+                        kinematics,
+                        group.body_a[pair],
+                        manifold.point_a[:, pair, slot],
+                    )
+                )
+                jacobian_b.append(
+                    point_jacobian(
+                        model,
+                        kinematics,
+                        group.body_b[pair],
+                        manifold.point_b[:, pair, slot],
+                    )
+                )
+                geom_a.append(a)
+                geom_b.append(b)
+    if not distances:
         empty_scalar = Tensor.zeros(
             batch, 0, dtype=kinematics.body_pos.dtype, device=kinematics.body_pos.device
         )
@@ -520,17 +430,23 @@ def contacts(model: CompiledModel, kinematics: Kinematics) -> ContactBatch:
             ),
             empty_jacobian,
             empty_jacobian,
+            empty_scalar,
+            (),
+            (),
         )
     return ContactBatch(
         ContactGeometry(
-            Tensor.stack(*(value.distance for value in geometries), dim=1),
-            Tensor.stack(*(value.normal for value in geometries), dim=1),
-            Tensor.stack(*(value.point_a for value in geometries), dim=1),
-            Tensor.stack(*(value.point_b for value in geometries), dim=1),
-            Tensor.stack(*(value.active for value in geometries), dim=1),
+            Tensor.cat(*distances, dim=1),
+            Tensor.cat(*normals, dim=1),
+            Tensor.cat(*points_a, dim=1),
+            Tensor.cat(*points_b, dim=1),
+            Tensor.cat(*activities, dim=1),
         ),
         Tensor.stack(*jacobian_a, dim=1),
         Tensor.stack(*jacobian_b, dim=1),
+        Tensor.cat(*weights, dim=1),
+        tuple(geom_a),
+        tuple(geom_b),
     )
 
 
@@ -542,7 +458,7 @@ def smooth_generalized_force(
 ) -> Tensor:
     """Maps differentiable Cartesian contact forces to generalized forces."""
 
-    if not model.collision_pairs:
+    if not contact_batch.geom_a:
         return Tensor.zeros(
             qvel.shape[0], model.nv, dtype=qvel.dtype, device=qvel.device
         )
@@ -562,7 +478,10 @@ def smooth_generalized_force(
                 (
                     geom_friction[:, a] * geom_friction[:, b]
                 ).sqrt()
-                for a, b in model.collision_pairs
+                for a, b in zip(
+                    contact_batch.geom_a,
+                    contact_batch.geom_b,
+                )
             ),
             dim=1,
         ) * spec.friction
@@ -572,10 +491,16 @@ def smooth_generalized_force(
                 (
                     model.geom_friction[a] * model.geom_friction[b]
                 ).sqrt()
-                for a, b in model.collision_pairs
+                for a, b in zip(
+                    contact_batch.geom_a,
+                    contact_batch.geom_b,
+                )
             ),
             dim=0,
-        ).unsqueeze(0).expand(qvel.shape[0], len(model.collision_pairs)) * spec.friction
+        ).unsqueeze(0).expand(
+            qvel.shape[0],
+            len(contact_batch.geom_a),
+        ) * spec.friction
     forces = smooth_contact(
         contact_batch.geometry,
         velocity_a,
@@ -592,7 +517,7 @@ def smooth_generalized_force(
     return (
         contact_batch.jacobian_a * forces.force_a.unsqueeze(-1)
         + contact_batch.jacobian_b * forces.force_b.unsqueeze(-1)
-    ).sum(axis=-2).sum(axis=1)
+    ).sum(axis=-2).mul(contact_batch.weight.unsqueeze(-1)).sum(axis=1)
 
 
 def smooth_free_body_generalized_force(
@@ -648,7 +573,7 @@ def smooth_free_body_generalized_force(
                 qvel.shape[0],
                 len(group.geom_a),
             )
-        ) * spec.friction
+        ).unsqueeze(-1) * spec.friction
         forces = smooth_contact(
             geometry,
             _group_point_velocity(
@@ -681,14 +606,14 @@ def smooth_free_body_generalized_force(
                     group.body_a,
                     group.dof_a,
                     geometry.point_a,
-                    forces.force_a,
+                    forces.force_a * geometry.weights.unsqueeze(-1),
                 ),
                 _group_generalized_force(
                     kinematics,
                     group.body_b,
                     group.dof_b,
                     geometry.point_b,
-                    forces.force_b,
+                    forces.force_b * geometry.weights.unsqueeze(-1),
                 ),
             )
         )

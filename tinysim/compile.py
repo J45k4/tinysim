@@ -8,6 +8,7 @@ from tinygrad import Device, Tensor, dtypes
 from .model import (
     ActuatorSpec,
     BodySpec,
+    COLLISION_MANIFOLD_CAPACITY,
     ContactSpec,
     GeomSpec,
     JointSpec,
@@ -29,6 +30,7 @@ class CollisionGroup:
     body_b: tuple[int, ...]
     dof_a: tuple[int, ...]
     dof_b: tuple[int, ...]
+    capacity: int
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,7 @@ class CompiledModel:
     actuator_dof: tuple[int, ...]
     geoms: tuple[GeomSpec, ...]
     collision_pairs: tuple[tuple[int, int], ...]
+    collision_pair_capacity: tuple[int, ...]
     collision_groups: tuple[CollisionGroup, ...]
     free_body_incident_endpoints: tuple[tuple[int, ...], ...]
     free_body_incident_mask: tuple[tuple[float, ...], ...]
@@ -104,9 +107,13 @@ class CompiledModel:
     def nconstraint(self) -> int:
         if self.contact.mode != "constraint":
             return 0
-        return len(self.collision_pairs) + 2 * sum(
+        return sum(self.collision_pair_capacity) + 2 * sum(
             joint.limit is not None for joint in self.joints
         )
+
+    @property
+    def ncontact(self) -> int:
+        return sum(self.collision_pair_capacity)
 
 
 def _finite(values: tuple[float, ...], label: str) -> None:
@@ -383,12 +390,19 @@ def compile_model(
         collision_pairs.append((a, b))
         seen_pairs.add(key)
 
-    grouped_pairs: dict[tuple[str, str], list[tuple[int, int]]] = {}
-    for a, b in collision_pairs:
+    def canonical_kinds(a: int, b: int) -> tuple[str, str]:
         kinds = (normalized_geoms[a].kind, normalized_geoms[b].kind)
-        if kinds not in supported_pairs:
+        return kinds if kinds in supported_pairs else kinds[::-1]
+
+    grouped_pairs: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for original_a, original_b in collision_pairs:
+        a, b = original_a, original_b
+        kinds = canonical_kinds(a, b)
+        if kinds != (
+            normalized_geoms[a].kind,
+            normalized_geoms[b].kind,
+        ):
             a, b = b, a
-            kinds = kinds[::-1]
         grouped_pairs.setdefault(kinds, []).append((a, b))
 
     collision_groups: list[CollisionGroup] = []
@@ -412,6 +426,7 @@ def compile_model(
                 body_b=body_b,
                 dof_a=tuple(body_dof(body) for body in body_a),
                 dof_b=tuple(body_dof(body) for body in body_b),
+                capacity=COLLISION_MANIFOLD_CAPACITY[(kind_a, kind_b)],
             )
         )
 
@@ -514,6 +529,10 @@ def compile_model(
         actuator_dof=tuple(actuator_dof),
         geoms=tuple(normalized_geoms),
         collision_pairs=tuple(collision_pairs),
+        collision_pair_capacity=tuple(
+            COLLISION_MANIFOLD_CAPACITY[canonical_kinds(a, b)]
+            for a, b in collision_pairs
+        ),
         collision_groups=tuple(collision_groups),
         free_body_incident_endpoints=free_body_incident_endpoints,
         free_body_incident_mask=free_body_incident_mask,

@@ -1,10 +1,9 @@
 """Stress TinySim with a pushed tower of free rigid boxes.
 
-This is intentionally a collapse test, not yet a stable-stacking benchmark.
-Each box pair currently produces one SAT contact witness; real Jenga-quality
-resting contact needs a multi-point contact manifold. The scenario stresses
-box-box collision, rotation, friction, independent free-body dynamics, TinyJit, and
-optional batched grid recording without hiding that limitation.
+This is intentionally a collapse test, not a tuned stable-stacking benchmark.
+Box pairs use fixed four-slot SAT manifolds with inactive edge/vertex slots.
+The scenario stresses box-box collision, rotation, friction, independent
+free-body dynamics, TinyJit, and optional batched grid recording.
 """
 
 from argparse import ArgumentParser

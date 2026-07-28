@@ -25,11 +25,18 @@ use recursive Newton–Euler expressions. Dense Cholesky is the reference solve.
 
 ## Collision and contact
 
-The compiler fixes collision pairs and one contact slot per pair. Supported
-narrow-phase pairs are sphere-plane, sphere-sphere, sphere-capsule,
-capsule-plane, capsule-capsule, and box-plane. Signed distance is positive when
-separated. The normal points from shape A to shape B; forces on A and B are
-equal and opposite.
+The compiler fixes collision pairs and shape-specific manifold capacity:
+sphere pairs use one slot, capsule-plane and parallel capsule-capsule pairs use
+up to two, and box pairs use up to four. Supported narrow-phase pairs are
+sphere-plane, sphere-sphere, sphere-capsule, capsule-plane, capsule-capsule,
+box-plane, and box-box. Signed distance is positive when separated. The normal
+points from shape A to shape B; forces on A and B are equal and opposite.
+
+Box manifolds use the SAT normal, support-face vertices, and projection onto
+the reference face. Duplicate or geometrically inactive slots are masked.
+Smooth contact divides a pair's compliant load across its active slots so
+adding a manifold does not multiply stiffness. Constraint mode reserves one
+fixed unilateral row per possible slot.
 
 `smooth` mode uses a smooth positive penetration, a damped normal load, and a
 regularized Coulomb direction. Stiffness, damping, friction, and smoothing

@@ -7,13 +7,20 @@ from tinysim.collision import (
     ContactParams,
     all_pairs,
     box_box,
+    box_box_manifold,
     box_plane,
+    box_plane_manifold,
     capsule_capsule,
+    capsule_capsule_manifold,
     capsule_plane,
+    capsule_plane_manifold,
     fixed_pairs,
     sphere_capsule,
+    sphere_capsule_manifold,
     sphere_plane,
+    sphere_plane_manifold,
     sphere_sphere,
+    sphere_sphere_manifold,
 )
 from tinysim.contact import smooth_contact
 
@@ -35,24 +42,51 @@ class TestCollisionPrimitives(unittest.TestCase):
         self.assertEqual(values(result.normal), [[0.0, 0.0, -1.0]] * 3)
         self.assertEqual(values(result.point_b), [[0.0, 0.0, 0.0]] * 3)
 
+        manifold = sphere_plane_manifold(
+            Tensor([[0.0, 0.0, 0.25]]),
+            1.0,
+            Tensor([0.0, 0.0, 0.0]),
+            Tensor([0.0, 0.0, 1.0]),
+        )
+        self.assertEqual(manifold.distance.shape, (1, 1))
+        self.assertEqual(manifold.active.tolist(), [[True]])
+
     def test_sphere_sphere_witnesses_and_concentric_fallback(self):
+        center_a = Tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        radius_a = Tensor([1.0, 1.0])
+        center_b = Tensor([[3.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        radius_b = Tensor([1.0, 2.0])
         result = sphere_sphere(
-            Tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-            Tensor([1.0, 1.0]),
-            Tensor([[3.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-            Tensor([1.0, 2.0]),
+            center_a,
+            radius_a,
+            center_b,
+            radius_b,
         )
         self.assertEqual(values(result.distance), [1.0, -3.0])
         self.assertEqual(values(result.normal), [[1.0, 0.0, 0.0]] * 2)
         self.assertEqual(values(result.point_a), [[1.0, 0.0, 0.0]] * 2)
         self.assertEqual(values(result.point_b), [[2.0, 0.0, 0.0], [-2.0, 0.0, 0.0]])
+        manifold = sphere_sphere_manifold(
+            center_a,
+            radius_a,
+            center_b,
+            radius_b,
+        )
+        self.assertEqual(manifold.distance.shape, (2, 1))
+        self.assertEqual(
+            manifold.distance.squeeze(-1).tolist(),
+            result.distance.tolist(),
+        )
 
     def test_sphere_capsule_projection_and_degenerate_segment(self):
+        center = Tensor([[2.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
+        start = Tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        end = Tensor([[0.0, 0.0, 2.0], [0.0, 0.0, 0.0]])
         result = sphere_capsule(
-            Tensor([[2.0, 0.0, 1.0], [0.0, 0.0, 0.0]]),
+            center,
             0.5,
-            Tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-            Tensor([[0.0, 0.0, 2.0], [0.0, 0.0, 0.0]]),
+            start,
+            end,
             0.5,
         )
         self.assertEqual(values(result.distance), [1.0, -1.0])
@@ -62,6 +96,18 @@ class TestCollisionPrimitives(unittest.TestCase):
                 x for row in values(field) for x in (row if isinstance(row, list) else [row])
             )
             self.assertTrue(all(math.isfinite(x) for x in flattened))
+        manifold = sphere_capsule_manifold(
+            center,
+            0.5,
+            start,
+            end,
+            0.5,
+        )
+        self.assertEqual(manifold.distance.shape, (2, 1))
+        self.assertEqual(
+            manifold.distance.squeeze(-1).tolist(),
+            result.distance.tolist(),
+        )
 
     def test_capsule_plane_selects_low_endpoint(self):
         result = capsule_plane(
@@ -157,6 +203,131 @@ class TestCollisionPrimitives(unittest.TestCase):
             float(witness_gap.item()),
             float(penetrating.distance.item()),
             places=6,
+        )
+
+    def test_box_plane_manifold_uses_four_face_vertices(self):
+        manifold = box_plane_manifold(
+            Tensor([[0.0, 0.0, 0.4]]),
+            Tensor([[0.5, 0.5, 0.5]]),
+            Tensor([[1.0, 0.0, 0.0, 0.0]]),
+            Tensor([[0.0, 0.0, 0.0]]),
+            Tensor([[0.0, 0.0, 1.0]]),
+        )
+        self.assertEqual(manifold.distance.shape, (1, 4))
+        self.assertEqual(manifold.active.tolist(), [[True] * 4])
+        for distance in manifold.distance.tolist()[0]:
+            self.assertAlmostEqual(distance, -0.1, places=6)
+        points = {
+            tuple(round(component, 6) for component in point)
+            for point in manifold.point_a.tolist()[0]
+        }
+        self.assertEqual(len(points), 4)
+        self.assertAlmostEqual(
+            sum(manifold.weights.tolist()[0]),
+            1.0,
+            places=6,
+        )
+
+    def test_tilted_box_plane_manifold_masks_unused_face_slots(self):
+        sine, cosine = math.sin(math.pi / 8), math.cos(math.pi / 8)
+        manifold = box_plane_manifold(
+            Tensor([[0.0, 0.0, 0.6]]),
+            Tensor([[0.5, 0.5, 0.5]]),
+            Tensor([[cosine, 0.0, sine, 0.0]]),
+            Tensor([[0.0, 0.0, 0.0]]),
+            Tensor([[0.0, 0.0, 1.0]]),
+        )
+        self.assertEqual(
+            sum(bool(value) for value in manifold.active.tolist()[0]),
+            2,
+        )
+
+    def test_capsule_manifolds_use_shape_appropriate_capacity(self):
+        plane = capsule_plane_manifold(
+            Tensor([[-0.5, 0.0, 0.2]]),
+            Tensor([[0.5, 0.0, 0.2]]),
+            0.25,
+            Tensor([[0.0, 0.0, 0.0]]),
+            Tensor([[0.0, 0.0, 1.0]]),
+        )
+        self.assertEqual(plane.distance.shape, (1, 2))
+        self.assertEqual(plane.active.tolist(), [[True, True]])
+
+        parallel = capsule_capsule_manifold(
+            Tensor([[-1.0, 0.0, 0.0]]),
+            Tensor([[1.0, 0.0, 0.0]]),
+            0.25,
+            Tensor([[-0.8, 0.4, 0.0]]),
+            Tensor([[0.8, 0.4, 0.0]]),
+            0.25,
+        )
+        self.assertEqual(parallel.distance.shape, (1, 2))
+        self.assertEqual(parallel.active.tolist(), [[True, True]])
+        self.assertNotEqual(
+            parallel.point_a[0, 0].tolist(),
+            parallel.point_a[0, 1].tolist(),
+        )
+
+    def test_box_box_face_manifold_has_four_contacts(self):
+        identity = Tensor([[1.0, 0.0, 0.0, 0.0]])
+        manifold = box_box_manifold(
+            Tensor([[0.0, 0.0, 0.0]]),
+            Tensor([[0.5, 0.5, 0.5]]),
+            identity,
+            Tensor([[0.0, 0.0, 0.9]]),
+            Tensor([[0.5, 0.5, 0.5]]),
+            identity,
+        )
+        self.assertEqual(manifold.distance.shape, (1, 4))
+        self.assertEqual(manifold.active.tolist(), [[True] * 4])
+        for distance in manifold.distance.tolist()[0]:
+            self.assertAlmostEqual(distance, -0.1, places=5)
+
+    def test_weighted_box_manifold_gradient_matches_finite_difference(self):
+        params = ContactParams(
+            stiffness=30.0,
+            damping=0.0,
+            friction=0.0,
+            penetration_smoothing=0.02,
+            force_smoothing=1e-5,
+        )
+
+        def force_at(height):
+            center = Tensor.stack(
+                Tensor.zeros(1),
+                Tensor.zeros(1),
+                height,
+                dim=-1,
+            )
+            manifold = box_plane_manifold(
+                center,
+                Tensor([[0.5, 0.5, 0.5]]),
+                Tensor([[1.0, 0.0, 0.0, 0.0]]),
+                Tensor([[0.0, 0.0, 0.0]]),
+                Tensor([[0.0, 0.0, 1.0]]),
+            )
+            forces = smooth_contact(
+                manifold,
+                Tensor.zeros(1, 4, 3),
+                Tensor.zeros(1, 4, 3),
+                params,
+            )
+            return (
+                forces.force_a[..., 2] * manifold.weights
+            ).sum()
+
+        height = Tensor([0.4])
+        force_at(height).backward()
+        analytical = float(height.grad.item())
+        step = 1e-3
+        finite_difference = (
+            float(force_at(Tensor([0.4 + step])).item())
+            - float(force_at(Tensor([0.4 - step])).item())
+        ) / (2 * step)
+        self.assertAlmostEqual(
+            analytical,
+            finite_difference,
+            delta=2e-2,
         )
 
     def test_fixed_pair_layout(self):

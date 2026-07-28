@@ -96,11 +96,17 @@ class TestArticulatedContact(unittest.TestCase):
             ]]
         )
         batch = contacts(model, forward_kinematics(model, qpos))
+        self.assertEqual(model.ncontact, 4)
+        self.assertEqual(batch.geometry.distance.shape, (1, 4))
         self.assertEqual(model.collision_pairs, ((0, 1),))
         self.assertAlmostEqual(
-            float(batch.geometry.distance.item()),
+            batch.geometry.distance.tolist()[0][0],
             0.5,
             places=6,
+        )
+        self.assertEqual(
+            batch.geometry.active.tolist(),
+            [[False] * 4],
         )
 
     def test_batched_free_body_force_matches_general_jacobian_path(self):
@@ -172,6 +178,111 @@ class TestArticulatedContact(unittest.TestCase):
             reference.tolist()[0],
         ):
             self.assertAlmostEqual(actual, expected, delta=2e-5)
+
+    def test_box_plane_manifold_balances_resting_contact_torque(self):
+        model = compile_model(
+            ModelSpec(
+                bodies=[
+                    BodySpec("box", inertia=(0.1, 0.1, 0.1)),
+                ],
+                joints=[JointSpec("free", 0, "free")],
+                geoms=[
+                    GeomSpec("box", 0, "box", (0.5, 0.5, 0.5)),
+                    GeomSpec("floor", -1, "plane", (0.0, 0.0, 0.1)),
+                ],
+                gravity=(0.0, 0.0, 0.0),
+                contact=ContactSpec(
+                    mode="smooth",
+                    stiffness=100.0,
+                    damping=0.0,
+                    friction=0.0,
+                ),
+            )
+        )
+        qpos = Tensor(
+            [[0.0, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0]]
+        )
+        qvel = Tensor.zeros(1, 6)
+        force = smooth_free_body_generalized_force(
+            model,
+            forward_kinematics(model, qpos),
+            qvel,
+        ).realize()
+        self.assertGreater(float(force[0, 2].item()), 0.0)
+        for torque in force[0, 3:].tolist():
+            self.assertAlmostEqual(torque, 0.0, delta=1e-6)
+
+    def test_constraint_state_reserves_box_manifold_slots(self):
+        model = compile_model(
+            ModelSpec(
+                bodies=[
+                    BodySpec("box", inertia=(0.1, 0.1, 0.1)),
+                ],
+                joints=[JointSpec("free", 0, "free")],
+                geoms=[
+                    GeomSpec("box", 0, "box", (0.5, 0.5, 0.5)),
+                    GeomSpec("floor", -1, "plane", (0.0, 0.0, 0.1)),
+                ],
+                contact=ContactSpec(
+                    mode="constraint",
+                    solver_iterations=2,
+                ),
+            )
+        )
+        self.assertEqual(model.ncontact, 4)
+        self.assertEqual(model.nconstraint, 4)
+        base = make_state(model)
+        self.assertEqual(base.constraint_impulse.shape, (1, 4))
+        state = State(
+            Tensor([[0.0, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0]]),
+            base.qvel,
+            base.ctrl,
+            base.time,
+            base.constraint_impulse,
+            base.parameters,
+        )
+        result = step(model, state)
+        self.assertEqual(result.constraint_impulse.shape, (1, 4))
+        self.assertTrue(result.qvel.isfinite().all().item())
+
+    def test_flat_box_rollout_does_not_create_angular_motion(self):
+        model = compile_model(
+            ModelSpec(
+                bodies=[
+                    BodySpec("box", inertia=(0.1, 0.1, 0.1)),
+                ],
+                joints=[JointSpec("free", 0, "free")],
+                geoms=[
+                    GeomSpec("box", 0, "box", (0.5, 0.5, 0.5)),
+                    GeomSpec("floor", -1, "plane", (0.0, 0.0, 0.1)),
+                ],
+                timestep=0.001,
+                contact=ContactSpec(
+                    mode="smooth",
+                    stiffness=5_000.0,
+                    damping=100.0,
+                    friction=0.5,
+                ),
+            )
+        )
+        base = make_state(model)
+        state = State(
+            Tensor([[0.0, 0.0, 0.49, 1.0, 0.0, 0.0, 0.0]]),
+            base.qvel,
+            base.ctrl,
+            base.time,
+            base.constraint_impulse,
+            base.parameters,
+        )
+        for _ in range(10):
+            state = step(model, state)
+        for angular_velocity in state.qvel[0, 3:].tolist():
+            self.assertAlmostEqual(
+                angular_velocity,
+                0.0,
+                delta=1e-6,
+            )
+        self.assertTrue(state.qpos.isfinite().all().item())
 
     def test_smooth_contact_is_in_articulated_step_and_differentiable(self):
         model = ball_model("smooth")

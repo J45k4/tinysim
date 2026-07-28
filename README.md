@@ -158,12 +158,12 @@ PYTHONPATH=.:tinygrad DEV=CUDA python3 examples/jenga.py \
   --record-grid 16 --grid-columns 4 --record-every 10
 ```
 
-This is deliberately a collapse test. TinySim currently emits one contact
-witness per box pair; stable Jenga-quality stacking will require multi-point
-face contact manifolds. Tall towers default to a declared support graph
-(corresponding adjacent-level blocks plus every block against the floor).
-`--pair-mode local` adds all adjacent and same-level pairs; `--pair-mode all`
-compiles the quadratic full graph.
+This is deliberately a collapse test rather than a resting-stack benchmark.
+TinySim uses fixed four-slot box manifolds, with inactive slots masked for
+edge/vertex contacts and smooth load distributed over active points. Tall
+towers default to a declared support graph (corresponding adjacent-level blocks
+plus every block against the floor). `--pair-mode local` adds all adjacent and
+same-level pairs; `--pair-mode all` compiles the quadratic full graph.
 
 MJCF loading is available either as a diagnostic-rich imported packet or
 directly as a `ModelSpec`:

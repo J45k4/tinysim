@@ -230,8 +230,8 @@ def box_box(
 ) -> ContactGeometry:
     """Collide two oriented boxes with the 15-axis separating-axis test.
 
-    The least-penetrating axis and one support-point witness are returned,
-    matching TinySim's current fixed one-contact-slot-per-pair layout.
+    The least-penetrating axis and one representative support witness are
+    returned. ``box_box_manifold`` expands face contact into fixed slots.
     """
 
     for name, value in (
