@@ -153,9 +153,10 @@ rotation, friction, many fixed collision pairs, TinyJit, and grid recording:
 
 ```bash
 PYTHONPATH=.:tinygrad DEV=CUDA python3 examples/jenga.py \
-  --levels 2 --worlds 16 --steps 1500 \
-  --record artifacts/jenga-grid.mp4 \
-  --record-grid 16 --grid-columns 4 --record-every 10
+  --levels 10 --worlds 16 --steps 5000 \
+  --record artifacts/jenga-manifolds-orbit-16.mp4 \
+  --record-grid 16 --grid-columns 4 --record-every 10 \
+  --fps 30 --camera-turns 1 --camera-elevation 20
 ```
 
 This is deliberately a collapse test rather than a resting-stack benchmark.
@@ -164,6 +165,9 @@ edge/vertex contacts and smooth load distributed over active points. Tall
 towers default to a declared support graph (corresponding adjacent-level blocks
 plus every block against the floor). `--pair-mode local` adds all adjacent and
 same-level pairs; `--pair-mode all` compiles the quadratic full graph.
+The command records a five-second, 4-by-4 grid while the orthographic 3D camera
+completes one orbit. `Simulation.run(...)` and `Simulation.record(...)` also
+accept a fixed `Camera3D` or a reusable `OrbitCamera` path.
 
 MJCF loading is available either as a diagnostic-rich imported packet or
 directly as a `ModelSpec`:

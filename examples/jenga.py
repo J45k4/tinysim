@@ -7,7 +7,7 @@ free-body dynamics, TinyJit, and optional batched grid recording.
 """
 
 from argparse import ArgumentParser
-from math import sqrt
+from math import isfinite, pi, sqrt
 from pathlib import Path
 
 from tinysim import (
@@ -18,6 +18,7 @@ from tinysim import (
     ModelSpec,
     Simulation,
 )
+from tinysim.render import OrbitCamera
 
 
 HALF_SIZE = (0.30, 0.10, 0.06)
@@ -188,11 +189,36 @@ def main() -> None:
     parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=960)
+    parser.add_argument(
+        "--camera-turns",
+        type=float,
+        default=1.0,
+        help="camera revolutions over the recording (default: 1)",
+    )
+    parser.add_argument(
+        "--camera-elevation",
+        type=float,
+        default=20.0,
+        metavar="DEGREES",
+    )
+    parser.add_argument("--camera-zoom", type=float, default=1.1)
     args = parser.parse_args()
     if min(args.levels, args.worlds, args.steps) < 1:
         parser.error("--levels, --worlds, and --steps must be positive")
     if args.push < 0.0:
         parser.error("--push must be nonnegative")
+    if (
+        not all(
+            isfinite(value)
+            for value in (
+                args.camera_turns,
+                args.camera_elevation,
+                args.camera_zoom,
+            )
+        )
+        or args.camera_zoom <= 0.0
+    ):
+        parser.error("camera values must be finite and zoom positive")
     if not 1 <= args.record_every <= args.steps:
         parser.error("--record-every must be between 1 and --steps")
     if args.record_grid is not None:
@@ -240,6 +266,12 @@ def main() -> None:
         fps=args.fps,
         width=args.width,
         height=args.height,
+        camera=OrbitCamera(
+            center_z=args.levels * HALF_SIZE[2],
+            elevation=args.camera_elevation * pi / 180.0,
+            turns=args.camera_turns,
+            zoom=args.camera_zoom,
+        ),
     )
 
     final = simulation.state.qpos[0].clone().realize().tolist()

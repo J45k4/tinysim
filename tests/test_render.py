@@ -1,4 +1,5 @@
 from io import BytesIO
+import math
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,6 +8,8 @@ from unittest.mock import patch
 
 from tinysim.render import (
     Camera2D,
+    Camera3D,
+    OrbitCamera,
     encode_mp4,
     render_articulated,
     render_batched_pendulums,
@@ -97,6 +100,27 @@ class TestRender(unittest.TestCase):
         self.assertNotEqual(default, controlled)
         with self.assertRaisesRegex(ValueError, "zoom positive"):
             Camera2D(zoom=0.0)
+
+    def test_orbit_camera_advances_azimuth_over_the_recording(self):
+        orbit = OrbitCamera(
+            center_z=0.6,
+            elevation=0.25,
+            start_azimuth=0.4,
+            turns=0.5,
+            zoom=1.2,
+        )
+        first = orbit(0, 5)
+        middle = orbit(2, 5)
+        last = orbit(4, 5)
+        self.assertIsInstance(first, Camera3D)
+        self.assertAlmostEqual(first.azimuth, 0.4)
+        self.assertAlmostEqual(middle.azimuth, 0.4 + 0.5 * math.pi)
+        self.assertAlmostEqual(last.azimuth, 0.4 + math.pi)
+        self.assertEqual(first.center_z, 0.6)
+        with self.assertRaisesRegex(ValueError, "index"):
+            orbit(5, 5)
+        with self.assertRaisesRegex(ValueError, "zoom positive"):
+            Camera3D(zoom=0.0)
 
     def test_mp4_requires_even_dimensions(self):
         with self.assertRaisesRegex(ValueError, "positive even"):

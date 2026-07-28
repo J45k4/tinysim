@@ -3,9 +3,9 @@
 This module consumes host-side trajectories. Nothing in the physics core imports it.
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from math import cos, isfinite, sin, sqrt
+from math import cos, isfinite, pi, sin, sqrt
 import os
 from pathlib import Path
 import shutil
@@ -35,6 +35,70 @@ class Camera2D:
             raise ValueError("camera center/zoom must be finite and zoom positive")
 
 
+@dataclass(frozen=True)
+class Camera3D:
+    """Orthographic camera looking at a world-space target."""
+
+    center_x: float = 0.0
+    center_y: float = 0.0
+    center_z: float = 0.0
+    azimuth: float = 0.0
+    elevation: float = 0.0
+    zoom: float = 1.0
+
+    def __post_init__(self) -> None:
+        values = (
+            self.center_x,
+            self.center_y,
+            self.center_z,
+            self.azimuth,
+            self.elevation,
+            self.zoom,
+        )
+        if not all(isfinite(value) for value in values) or self.zoom <= 0:
+            raise ValueError("camera values must be finite and zoom positive")
+
+
+@dataclass(frozen=True)
+class OrbitCamera:
+    """Produces a 3D camera that circles its target over one recording."""
+
+    center_x: float = 0.0
+    center_y: float = 0.0
+    center_z: float = 0.0
+    elevation: float = 0.0
+    start_azimuth: float = 0.0
+    turns: float = 1.0
+    zoom: float = 1.0
+
+    def __post_init__(self) -> None:
+        values = (
+            self.center_x,
+            self.center_y,
+            self.center_z,
+            self.elevation,
+            self.start_azimuth,
+            self.turns,
+            self.zoom,
+        )
+        if not all(isfinite(value) for value in values) or self.zoom <= 0:
+            raise ValueError("camera values must be finite and zoom positive")
+
+    def __call__(self, frame: int, frame_count: int) -> Camera3D:
+        if frame_count < 1 or not 0 <= frame < frame_count:
+            raise ValueError("camera frame must index the recording")
+        progress = 0.0 if frame_count == 1 else frame / (frame_count - 1)
+        return Camera3D(
+            center_x=self.center_x,
+            center_y=self.center_y,
+            center_z=self.center_z,
+            azimuth=self.start_azimuth + 2.0 * pi * self.turns * progress,
+            elevation=self.elevation,
+            zoom=self.zoom,
+        )
+
+
+Camera = Camera2D | Camera3D
 Vector3 = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
 
@@ -243,25 +307,63 @@ def _frame(width: int, height: int) -> bytearray:
     return bytearray(bytes((245, 247, 250)) * (width * height))
 
 
+def _projector(
+    camera: Camera,
+    width: int,
+    height: int,
+) -> tuple[Callable[[Vector3], tuple[int, int]], float]:
+    scale = min(width, height) * camera.zoom / 3.0
+    if isinstance(camera, Camera2D):
+        return (
+            lambda position: (
+                width // 2
+                + round((position[0] - camera.center_x) * scale),
+                height // 2
+                - round((position[2] - camera.center_z) * scale),
+            ),
+            scale,
+        )
+
+    cosine_azimuth, sine_azimuth = (
+        cos(camera.azimuth),
+        sin(camera.azimuth),
+    )
+    cosine_elevation, sine_elevation = (
+        cos(camera.elevation),
+        sin(camera.elevation),
+    )
+
+    def project(position: Vector3) -> tuple[int, int]:
+        x = position[0] - camera.center_x
+        y = position[1] - camera.center_y
+        z = position[2] - camera.center_z
+        right = cosine_azimuth * x + sine_azimuth * y
+        up = (
+            sine_azimuth * sine_elevation * x
+            - cosine_azimuth * sine_elevation * y
+            + cosine_elevation * z
+        )
+        return (
+            width // 2 + round(right * scale),
+            height // 2 - round(up * scale),
+        )
+
+    return project, scale
+
+
 def render_model(
     model: "CompiledModel",
     qpos: Sequence[float],
     *,
     width: int = 640,
     height: int = 480,
-    camera: Camera2D = Camera2D(),
+    camera: Camera = Camera2D(),
 ) -> bytes:
     """Render the compiled primitive scene from a host-side qpos snapshot."""
 
     frame = _frame(width, height)
     body_positions, body_quaternions = _model_body_transforms(model, qpos)
-    scale = min(width, height) * camera.zoom / 3.0
-
-    def project(position: Vector3) -> tuple[int, int]:
-        return (
-            width // 2 + round((position[0] - camera.center_x) * scale),
-            height // 2 - round((position[2] - camera.center_z) * scale),
-        )
+    project, scale = _projector(camera, width, height)
 
     for index, geom in enumerate(model.geoms):
         if geom.body == -1:
@@ -344,37 +446,32 @@ def render_model(
                     thickness=2,
                 )
         else:
-            normal = _quat_rotate(quaternion, (0.0, 0.0, 1.0))
-            direction_x, direction_z = normal[2], -normal[0]
-            length = sqrt(
-                direction_x * direction_x + direction_z * direction_z
-            )
-            if length <= 1e-12:
-                direction_x, direction_z, length = 1.0, 0.0, 1.0
             span = max(width, height) / scale
-            direction_x *= span / length
-            direction_z *= span / length
-            _line(
-                frame,
-                width,
-                height,
-                project(
-                    (
-                        position[0] - direction_x,
-                        position[1],
-                        position[2] - direction_z,
-                    )
-                ),
-                project(
-                    (
-                        position[0] + direction_x,
-                        position[1],
-                        position[2] + direction_z,
-                    )
-                ),
-                (145, 150, 158),
-                thickness=3,
-            )
+            for tangent in (
+                _quat_rotate(quaternion, (span, 0.0, 0.0)),
+                _quat_rotate(quaternion, (0.0, span, 0.0)),
+            ):
+                _line(
+                    frame,
+                    width,
+                    height,
+                    project(
+                        (
+                            position[0] - tangent[0],
+                            position[1] - tangent[1],
+                            position[2] - tangent[2],
+                        )
+                    ),
+                    project(
+                        (
+                            position[0] + tangent[0],
+                            position[1] + tangent[1],
+                            position[2] + tangent[2],
+                        )
+                    ),
+                    (145, 150, 158),
+                    thickness=3,
+                )
     return bytes(frame)
 
 
@@ -385,7 +482,7 @@ def render_model_grid(
     width: int = 640,
     height: int = 480,
     columns: int | None = None,
-    camera: Camera2D = Camera2D(),
+    camera: Camera = Camera2D(),
 ) -> bytes:
     """Render several worlds as tiles in one RGB frame."""
 

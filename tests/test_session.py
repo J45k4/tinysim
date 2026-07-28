@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -14,7 +15,12 @@ from tinysim import (
     Simulation,
     Simulator,
 )
-from tinysim.render import render_model, render_model_grid
+from tinysim.render import (
+    Camera3D,
+    OrbitCamera,
+    render_model,
+    render_model_grid,
+)
 from tinysim.trajectory import TrajectoryReader
 
 
@@ -269,6 +275,52 @@ class TestSimulationSession(unittest.TestCase):
         )
         self.assertEqual(len(high), 64 * 48 * 3)
         self.assertNotEqual(high, low)
+
+    def test_model_renderer_projects_world_y_with_3d_camera(self):
+        model = Simulator.compile(ball_spec()).model
+        qpos = [0.2, 0.4, 1.0, 1.0, 0.0, 0.0, 0.0]
+        first = render_model(
+            model,
+            qpos,
+            width=96,
+            height=64,
+            camera=Camera3D(azimuth=0.0, elevation=0.25),
+        )
+        quarter_turn = render_model(
+            model,
+            qpos,
+            width=96,
+            height=64,
+            camera=Camera3D(azimuth=math.pi / 2.0, elevation=0.25),
+        )
+        self.assertNotEqual(first, quarter_turn)
+
+    def test_recording_accepts_an_orbit_camera_path(self):
+        encoded: list[bytes] = []
+
+        def fake_encode(frames, path, *, width, height, fps):
+            encoded.extend(frames)
+
+        simulation = Simulation(ball_spec())
+        simulation.reset(
+            qpos=[0.2, 0.4, 1.0, 1.0, 0.0, 0.0, 0.0]
+        )
+        with TemporaryDirectory() as directory:
+            with patch(
+                "tinysim.session.encode_mp4",
+                side_effect=fake_encode,
+            ):
+                simulation.record(
+                    Path(directory) / "orbit.mp4",
+                    steps=100,
+                    record_every=10,
+                    fps=50,
+                    width=96,
+                    height=64,
+                    camera=OrbitCamera(elevation=0.25),
+                )
+        self.assertGreater(len(encoded), 2)
+        self.assertNotEqual(encoded[0], encoded[len(encoded) // 2])
 
     def test_automatic_model_grid_renderer_tiles_worlds(self):
         model = Simulator.compile(ball_spec()).model

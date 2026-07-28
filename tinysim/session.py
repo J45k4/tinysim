@@ -1,13 +1,20 @@
 """Stateful simulation runs with optional host-side trajectory recording."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from math import isqrt
 from pathlib import Path
 
 from tinygrad import Tensor, dtypes
 
 from .model import ModelSpec
-from .render import Camera2D, encode_mp4, render_model, render_model_grid
+from .render import (
+    Camera,
+    Camera2D,
+    Camera3D,
+    encode_mp4,
+    render_model,
+    render_model_grid,
+)
 from .simulation import Simulator
 from .state import State, validate_state
 from .trajectory import (
@@ -19,6 +26,18 @@ from .trajectory import (
 
 FrameRenderer = Callable[[Sequence[float]], bytes]
 GridFrameRenderer = Callable[[Sequence[Sequence[float]]], bytes]
+CameraPath = Callable[[int, int], Camera]
+
+
+def _camera_at(
+    camera: Camera | CameraPath,
+    frame: int,
+    frame_count: int,
+) -> Camera:
+    selected = camera(frame, frame_count) if callable(camera) else camera
+    if not isinstance(selected, (Camera2D, Camera3D)):
+        raise TypeError("camera path must return Camera2D or Camera3D")
+    return selected
 
 
 def _batched_value(
@@ -154,7 +173,7 @@ class Simulation:
         fps: int = 60,
         width: int = 640,
         height: int = 480,
-        camera: Camera2D = Camera2D(),
+        camera: Camera | CameraPath = Camera2D(),
         renderer: FrameRenderer | None = None,
         grid_renderer: GridFrameRenderer | None = None,
     ) -> State:
@@ -277,41 +296,58 @@ class Simulation:
                     capture(writer)
 
         nq = self.simulator.model.nq
-        if len(recorded_worlds) == 1:
-            render_frame = renderer or (
-                lambda position: render_model(
-                    self.simulator.model,
-                    position,
-                    width=width,
-                    height=height,
-                    camera=camera,
-                )
-            )
-        else:
-            render_frame = grid_renderer or (
-                lambda position: render_model_grid(
-                    self.simulator.model,
-                    [
-                        position[offset : offset + nq]
-                        for offset in range(0, len(position), nq)
-                    ],
-                    width=width,
-                    height=height,
-                    columns=columns,
-                    camera=camera,
-                )
-            )
         with TrajectoryReader(trajectory_path) as trajectory:
-            indices = iter_playback_indices(
-                trajectory.frame_count,
-                timestep=trajectory.timestep,
-                fps=fps,
+            indices = tuple(
+                iter_playback_indices(
+                    trajectory.frame_count,
+                    timestep=trajectory.timestep,
+                    fps=fps,
+                )
             )
+
+            def frames() -> Iterator[bytes]:
+                for frame, index in enumerate(indices):
+                    position = trajectory.read_qpos(index)
+                    if len(recorded_worlds) == 1:
+                        yield (
+                            renderer(position)
+                            if renderer is not None
+                            else render_model(
+                                self.simulator.model,
+                                position,
+                                width=width,
+                                height=height,
+                                camera=_camera_at(
+                                    camera,
+                                    frame,
+                                    len(indices),
+                                ),
+                            )
+                        )
+                    else:
+                        qposes = [
+                            position[offset : offset + nq]
+                            for offset in range(0, len(position), nq)
+                        ]
+                        yield (
+                            grid_renderer(qposes)
+                            if grid_renderer is not None
+                            else render_model_grid(
+                                self.simulator.model,
+                                qposes,
+                                width=width,
+                                height=height,
+                                columns=columns,
+                                camera=_camera_at(
+                                    camera,
+                                    frame,
+                                    len(indices),
+                                ),
+                            )
+                        )
+
             encode_mp4(
-                (
-                    render_frame(trajectory.read_qpos(index))
-                    for index in indices
-                ),
+                frames(),
                 video_path,
                 width=width,
                 height=height,
@@ -331,7 +367,7 @@ class Simulation:
         fps: int = 60,
         width: int = 640,
         height: int = 480,
-        camera: Camera2D = Camera2D(),
+        camera: Camera | CameraPath = Camera2D(),
         control: Tensor | None = None,
         inference: bool = True,
         renderer: FrameRenderer | None = None,
